@@ -114,10 +114,10 @@ P(win A)  = power_A / (power_A + power_B)
 ```
 
 The pot is `2 * wager` minus a `DUEL_RAKE` (5%) house cut paid to the winner. The
-minimum wager is `DUEL_MIN_WAGER` (50); the maximum is `DUEL_MAX_WAGER_FRACTION`
-(10%) of the poorer player's balance. A pair can duel once per `DUEL_COOLDOWN_S`
-(10 min). Idle is auto-claimed for both players before affordability is checked, so
-the balances used are current.
+minimum wager is `DUEL_MIN_WAGER` (50); there is no upper cap, so a player may wager
+up to their entire balance. A pair can duel once per `DUEL_COOLDOWN_S` (2 min by default). Idle
+is auto-claimed for both players before affordability is checked, so the balances used
+are current — each player only needs to hold at least the wagered amount.
 
 ### Raids
 

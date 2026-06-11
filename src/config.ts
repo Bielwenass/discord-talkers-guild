@@ -70,9 +70,8 @@ export const ECON = {
 
   // §8 duels
   DUEL_RAKE: 0.05,
-  DUEL_MIN_WAGER: 50,
-  DUEL_MAX_WAGER_FRACTION: 0.1, // of the poorer player's balance
-  DUEL_COOLDOWN_S: 600, // 10 min per pair
+  DUEL_MIN_WAGER: 50, // no upper cap — a player may wager their entire balance
+  DUEL_COOLDOWN_S: 120, // 2 min per pair
 
   // §9 raids
   RAID_HP_PER_XP: 40, // hp = 40 * guild XP over previous 7 days

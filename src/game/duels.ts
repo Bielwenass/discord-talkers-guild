@@ -12,16 +12,6 @@ export function powerOf(guildId: string, userId: string): number {
   return duelPower(u.level, u.str, gearScoreFor(u));
 }
 
-/** Max wager = 10% of the poorer player's (idle-claimed) balance, min floor 50. */
-export function maxWager(guildId: string, aId: string, bId: string, nowS: number): number {
-  claimIdle(guildId, aId, nowS);
-  claimIdle(guildId, bId, nowS);
-  const a = getOrCreateUser(guildId, aId);
-  const b = getOrCreateUser(guildId, bId);
-  const poorer = Math.min(a.gold, b.gold);
-  return Math.floor(poorer * ECON.DUEL_MAX_WAGER_FRACTION);
-}
-
 export function validateWager(
   guildId: string,
   aId: string,
@@ -32,22 +22,16 @@ export function validateWager(
   if (wager < ECON.DUEL_MIN_WAGER) {
     return { ok: false, reason: `Minimum wager is ${ECON.DUEL_MIN_WAGER}g.` };
   }
-  // maxWager auto-claims idle for both, so the balances we read after are current.
-  const max = maxWager(guildId, aId, bId, nowS);
-  if (max < ECON.DUEL_MIN_WAGER) {
-    // The min wager is 10% of the poorer balance, so anyone below this can't afford it.
-    const minBalance = Math.ceil(ECON.DUEL_MIN_WAGER / ECON.DUEL_MAX_WAGER_FRACTION);
-    const short = [aId, bId]
-      .map((id) => ({ id, gold: getOrCreateUser(guildId, id).gold }))
-      .filter((p) => p.gold < minBalance)
-      .map((p) => `<@${p.id}> has **${p.gold}g** (needs ${minBalance}g)`);
-    return {
-      ok: false,
-      reason: `Can't afford the **${ECON.DUEL_MIN_WAGER}g** minimum wager — ${short.join(" and ")}.`,
-    };
-  }
-  if (wager > max) {
-    return { ok: false, reason: `Max wager for this duel is ${max}g (10% of the poorer balance).` };
+  // Realize idle income for both first, so the balances we check are current.
+  // There is no upper cap: a player may wager up to their entire balance.
+  claimIdle(guildId, aId, nowS);
+  claimIdle(guildId, bId, nowS);
+  const short = [aId, bId]
+    .map((id) => ({ id, gold: getOrCreateUser(guildId, id).gold }))
+    .filter((p) => p.gold < wager)
+    .map((p) => `<@${p.id}> has **${p.gold}g** (needs ${wager}g)`);
+  if (short.length > 0) {
+    return { ok: false, reason: `Can't cover the **${wager}g** wager — ${short.join(" and ")}.` };
   }
   return { ok: true };
 }
