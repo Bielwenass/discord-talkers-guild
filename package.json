@@ -1,0 +1,22 @@
+{
+  "name": "discord-talkers-guild",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --hot src/index.ts",
+    "register": "bun run -e \"import('./src/discord/register.ts').then(m => m.registerCommands())\"",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "discord.js": "^14.26.4"
+  }
+}

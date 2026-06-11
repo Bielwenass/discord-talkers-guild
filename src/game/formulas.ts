@@ -1,0 +1,111 @@
+// Pure economy math (design §3–§8). No discord.js, no DB — fully unit-testable.
+import { ECON } from "../config.ts";
+
+// --- §3.1 message XP ---
+
+/** length_bonus = 1 + 3 * min(chars, 400)/400  → 1.0 .. 4.0 */
+export function lengthBonus(chars: number): number {
+  const capped = Math.min(Math.max(chars, 0), ECON.LENGTH_CHAR_CAP);
+  return 1 + ECON.LENGTH_MAX_BONUS * (capped / ECON.LENGTH_CHAR_CAP);
+}
+
+/** stat_mult = 1 + 0.02 * INT */
+export function intMult(intStat: number): number {
+  return 1 + ECON.INT_XP_PER_POINT * intStat;
+}
+
+/** prestige_mult = 1 + 0.20 * prestige_count */
+export function prestigeMult(prestige: number): number {
+  return 1 + ECON.PRESTIGE_PER_LEVEL * prestige;
+}
+
+/**
+ * msg_xp = BASE * channel_weight * length_bonus * stat_mult * prestige_mult
+ * Returned unfloored; caller floors the final integer grant.
+ */
+export function messageXp(args: {
+  chars: number;
+  channelWeight: number;
+  intStat: number;
+  prestige: number;
+}): number {
+  return (
+    ECON.BASE_XP *
+    args.channelWeight *
+    lengthBonus(args.chars) *
+    intMult(args.intStat) *
+    prestigeMult(args.prestige)
+  );
+}
+
+// --- §3.2 social XP (credited to recipient) ---
+
+/** reply XP = 10 * (1 + 0.05 * CHA) */
+export function replyXp(cha: number): number {
+  return ECON.REPLY_XP_BASE * (1 + ECON.REPLY_CHA_PER_POINT * cha);
+}
+
+/** reaction XP = 6 * (1 + 0.05 * CHA) */
+export function reactionXp(cha: number): number {
+  return ECON.REACT_XP_BASE * (1 + ECON.REACT_CHA_PER_POINT * cha);
+}
+
+// --- §3.3 gold ---
+
+/** gold = floor(xp / 4) on every XP grant. */
+export function goldFromXp(xp: number): number {
+  return Math.floor(xp * ECON.GOLD_PER_XP);
+}
+
+// --- §3.4 levels: xp_to_next(L) = 80 * L^1.75 ---
+
+export function xpToNext(level: number): number {
+  return Math.floor(ECON.LEVEL_COEFF * Math.pow(level, ECON.LEVEL_EXP));
+}
+
+/** Total cumulative XP required to *reach* a given level from level 1. */
+export function cumulativeXpForLevel(level: number): number {
+  let total = 0;
+  for (let l = 1; l < level; l++) total += xpToNext(l);
+  return total;
+}
+
+/**
+ * Given total XP and a current level, return the level reached.
+ * Levels advance while xp >= cost of the current level's xp_to_next.
+ * `xp` is the running total; we consume thresholds cumulatively.
+ */
+export function levelFromTotalXp(totalXp: number): number {
+  let level = 1;
+  let consumed = 0;
+  // hard ceiling guard to avoid pathological loops
+  while (level < 10000) {
+    const need = xpToNext(level);
+    if (totalXp - consumed < need) break;
+    consumed += need;
+    level++;
+  }
+  return level;
+}
+
+// --- §5 stats ---
+
+/** cost(nth bought point) = 500 * 1.15^n  (n = bought_points already purchased). */
+export function statPointCost(boughtPoints: number): number {
+  return Math.floor(
+    ECON.STAT_COST_BASE * Math.pow(ECON.STAT_COST_GROWTH, boughtPoints),
+  );
+}
+
+// --- §8 duels ---
+
+/** power = level + 2*STR + gear_score (gear_score = sum of stat points on equipped items). */
+export function duelPower(level: number, str: number, gearScore: number): number {
+  return level + ECON.STR_DUEL_POWER * str + gearScore;
+}
+
+/** P(A wins) = power_A / (power_A + power_B). */
+export function duelWinProbability(powerA: number, powerB: number): number {
+  const denom = powerA + powerB;
+  return denom <= 0 ? 0.5 : powerA / denom;
+}

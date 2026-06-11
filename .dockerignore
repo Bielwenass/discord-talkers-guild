@@ -1,0 +1,16 @@
+node_modules
+.git
+.env
+.env.*
+*.db
+*.db-wal
+*.db-shm
+data
+out
+dist
+coverage
+*.log
+.DS_Store
+.idea
+docs
+test
