@@ -8,6 +8,13 @@ import { REST, Routes, type Client } from "discord.js";
 import { env } from "../config.ts";
 import { commands } from "./commands/index.ts";
 
+export async function clearDevGuildCommands(): Promise<void> {
+  if (!env.devGuildId) return;
+  const rest = new REST({ version: "10" }).setToken(env.token);
+  await rest.put(Routes.applicationGuildCommands(env.appId, env.devGuildId), { body: [] });
+  console.log(`Dev guild commands cleared.`);
+}
+
 export async function registerCommands(client: Client<true>): Promise<void> {
   const body = commands.map((c) => c.data.toJSON());
   const rest = new REST({ version: "10" }).setToken(env.token);

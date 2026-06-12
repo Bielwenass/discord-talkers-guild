@@ -4,7 +4,7 @@ import { Events } from "discord.js";
 import { assertEnv, env } from "./config.ts";
 import { getDb } from "./db/db.ts";
 import { createClient } from "./discord/client.ts";
-import { registerCommands } from "./discord/register.ts";
+import { registerCommands, clearDevGuildCommands } from "./discord/register.ts";
 import { onMessageCreate } from "./discord/events/messageCreate.ts";
 import { onReactionAdd } from "./discord/events/reactionAdd.ts";
 import { onInteraction } from "./discord/interactionCreate.ts";
@@ -35,6 +35,14 @@ async function main(): Promise<void> {
     void onInteraction(i);
   });
   client.on(Events.Error, (err) => console.error("Client error:", err));
+
+  const shutdown = async () => {
+    await clearDevGuildCommands().catch((err) => console.error("Failed to clear dev guild commands:", err));
+    client.destroy();
+  };
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => void shutdown().finally(() => process.exit(0)));
+  }
 
   await client.login(env.token);
 }

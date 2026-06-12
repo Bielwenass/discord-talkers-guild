@@ -135,7 +135,7 @@ export const RARITY_TABLE: Record<
 > = {
   common: { weight: 0.6, budgetMin: 1, budgetMax: 2, salvage: 15 },
   uncommon: { weight: 0.25, budgetMin: 3, budgetMax: 5, salvage: 60 },
-  rare: { weight: 0.1, budgetMin: 5, budgetMax: 8, salvage: 150 },
+  rare: { weight: 0.1, budgetMin: 6, budgetMax: 8, salvage: 150 },
   epic: { weight: 0.04, budgetMin: 9, budgetMax: 13, salvage: 500 },
   legendary: { weight: 0.01, budgetMin: 14, budgetMax: 20, salvage: 2000 },
 };
