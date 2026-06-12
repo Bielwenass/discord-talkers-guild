@@ -1,4 +1,4 @@
-import { MessageFlags } from "discord.js";
+import { MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 // Routes button / select-menu interactions by customId convention "action:args…".
 import {
   type ButtonInteraction,
@@ -12,7 +12,7 @@ import { buildInventoryReply, salvageCommons } from "./commands/inventory.ts";
 import { equip, salvage, getItem } from "../game/inventory.ts";
 import { resolveDuel } from "../game/duels.ts";
 import { doPrestige } from "../game/prestige.ts";
-import { activeQuestFor } from "../game/quests.ts";
+import { activeQuestFor, getTemplate } from "../game/quests.ts";
 import { duelOnCooldown, markDuel } from "./state.ts";
 import { getParty, joinParty, finalizeParty, userInPendingParty } from "./parties.ts";
 
@@ -150,11 +150,29 @@ async function handleQuestButton(interaction: ButtonInteraction, args: string[])
     }
     joinParty(partyId!, clicker); // may auto-finalize when full (edits the lobby message)
     const after = getParty(partyId!);
-    await interaction.reply({
-      content: after
-        ? `✅ <@${clicker}> joined the party — ${after.members.length}/4 adventurers.`
-        : `✅ <@${clicker}> joined — the party was full and set out!`,
-    });
+    if (after) {
+      // Party still open — update the lobby message to show current roster.
+      const tpl = getTemplate(after.templateId);
+      const stat = tpl?.stat.toUpperCase() ?? "?";
+      const roster = after.members.map((id) => `<@${id}>`).join(", ");
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId(`quest:join:${partyId}`).setLabel("Join").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`quest:pstart:${partyId}`).setLabel("Start now").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`quest:pcancel:${partyId}`).setLabel("Disband").setStyle(ButtonStyle.Danger),
+      );
+      await interaction.update({
+        content:
+          `🧭 <@${after.openerId}> is forming a party for **${tpl?.name ?? "a quest"}** ` +
+          `(${stat} · ${tpl?.kind ?? ""} · ${after.tier}).\n` +
+          `**Party:** ${roster} (${after.members.length}/4) — ` +
+          `Efficiency = highest ${stat} + 20% of the rest. ` +
+          `Auto-starts in 15 min or when the opener presses **Start now**.`,
+        components: [row],
+      });
+    } else {
+      // Party just filled and finalizeParty is already editing the message.
+      await interaction.deferUpdate();
+    }
     return;
   }
 
