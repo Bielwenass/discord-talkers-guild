@@ -152,9 +152,8 @@ async function handleQuestButton(interaction: ButtonInteraction, args: string[])
     const after = getParty(partyId!);
     await interaction.reply({
       content: after
-        ? `✅ Joined — ${after.members.length}/${4} adventurers.`
-        : "✅ Joined — the party was full and set out!",
-      flags: MessageFlags.Ephemeral,
+        ? `✅ <@${clicker}> joined the party — ${after.members.length}/4 adventurers.`
+        : `✅ <@${clicker}> joined — the party was full and set out!`,
     });
     return;
   }
