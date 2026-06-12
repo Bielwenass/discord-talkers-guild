@@ -11,6 +11,15 @@ import { utcDayString } from "../util/time.ts";
 
 const ROLE_THRESHOLDS = [5, 10, 25, 50];
 
+/** Whether a user row already exists (no side effects). Used to greet first-timers. */
+export function userExists(guildId: string, userId: string): boolean {
+  return (
+    getDb()
+      .query(`SELECT 1 FROM users WHERE guild_id = ? AND user_id = ?`)
+      .get(guildId, userId) != null
+  );
+}
+
 export function getOrCreateUser(guildId: string, userId: string): UserRow {
   const db = getDb();
   const existing = db
@@ -242,6 +251,37 @@ export function addGold(guildId: string, userId: string, amount: number): void {
     guildId,
     userId,
   ]);
+}
+
+/**
+ * Dev-only: set a user's gold to an absolute amount (clamped at 0).
+ * Used by the /dev command, which is gated behind the DEVMODE env flag.
+ */
+export function setGold(guildId: string, userId: string, amount: number): void {
+  getOrCreateUser(guildId, userId);
+  getDb().run(`UPDATE users SET gold = ? WHERE guild_id = ? AND user_id = ?`, [
+    Math.max(0, Math.floor(amount)),
+    guildId,
+    userId,
+  ]);
+}
+
+/**
+ * Dev-only: set a user's total XP absolutely and recompute their level to match.
+ * Leaves already-spent stat points alone; grants the difference in unspent points
+ * if the new level is higher than the current one.
+ */
+export function setXp(guildId: string, userId: string, totalXp: number): { level: number } {
+  const db = getDb();
+  const user = getOrCreateUser(guildId, userId);
+  const xp = Math.max(0, Math.floor(totalXp));
+  const level = levelFromTotalXp(xp);
+  const gained = Math.max(0, level - user.level);
+  db.run(
+    `UPDATE users SET xp = ?, level = ?, stat_points = stat_points + ? WHERE guild_id = ? AND user_id = ?`,
+    [xp, level, gained, guildId, userId],
+  );
+  return { level };
 }
 
 export function allocateStat(guildId: string, userId: string, stat: StatKey): boolean {

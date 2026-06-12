@@ -10,7 +10,7 @@ import type { Command } from "./types.ts";
 import { tx, getDb } from "../../db/db.ts";
 import { nowS } from "../../util/time.ts";
 import { ECON } from "../../config.ts";
-import { activeRaid, spawnRaid, resolveRaidIfDone } from "../../game/raids.ts";
+import { activeRaid, spawnRaid, resolveRaidIfDone, strikeRaid } from "../../game/raids.ts";
 import { announceRaidResolution } from "../raidAnnounce.ts";
 
 export const raid: Command = {
@@ -18,6 +18,9 @@ export const raid: Command = {
     .setName("raid")
     .setDescription("Boss raid status, damage board, and (admin) spawning")
     .addSubcommand((s) => s.setName("status").setDescription("Show the active raid and damage board"))
+    .addSubcommand((s) =>
+      s.setName("strike").setDescription("Strike the boss for a STR-scaled chunk of its HP (4h cooldown)"),
+    )
     .addSubcommand((s) =>
       s.setName("spawn").setDescription("(Admin) Spawn a boss scaled to recent activity"),
     ),
@@ -44,8 +47,30 @@ export const raid: Command = {
       await interaction.reply({
         content:
           `🐉 **A boss appears!** HP **${res.hp.toLocaleString()}**, flees <t:${res.endsAt}:R>.\n` +
-          `For the next ${ECON.RAID_WINDOW_H}h, **all XP earned also damages the boss.** Chat to fight!`,
+          `For the next ${ECON.RAID_WINDOW_H}h, **all XP earned also damages the boss** ` +
+          `(STR multiplies your hits). Chat to fight, or use **/raid strike** every 4h!`,
       });
+      return;
+    }
+
+    if (sub === "strike") {
+      const res = tx(() => strikeRaid(guildId, interaction.user.id, now));
+      if (!res.ok) {
+        const tail = res.cooldownS ? ` Ready <t:${now + res.cooldownS}:R>.` : "";
+        await interaction.reply({ content: `❌ ${res.reason}${tail}`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await interaction.reply({
+        content:
+          `🗡️ <@${interaction.user.id}> strikes for **${res.dealt.toLocaleString()}** ` +
+          `(${(res.pct * 100).toFixed(1)}% of max HP)!`,
+      });
+      if (res.justKilled) {
+        const resolution = tx(() => resolveRaidIfDone(guildId, now));
+        if (resolution) {
+          await announceRaidResolution(interaction.channel as GuildTextBasedChannel, resolution);
+        }
+      }
       return;
     }
 

@@ -11,7 +11,8 @@ export async function registerCommands(): Promise<void> {
 
   if (env.devGuildId) {
     await rest.put(Routes.applicationGuildCommands(env.appId, env.devGuildId), { body });
-    console.log(`Registered ${body.length} commands to dev guild ${env.devGuildId}.`);
+    await rest.put(Routes.applicationCommands(env.appId), { body: [] });
+    console.log(`Registered ${body.length} commands to dev guild ${env.devGuildId} (global cleared).`);
   } else {
     await rest.put(Routes.applicationCommands(env.appId), { body });
     console.log(`Registered ${body.length} global commands.`);

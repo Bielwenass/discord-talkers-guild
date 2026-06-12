@@ -1,5 +1,5 @@
 // Shared row/domain types mirroring the SQLite schema (design §12).
-import type { Rarity, Slot, ExpeditionTier } from "./config.ts";
+import type { Rarity, Slot, ExpeditionTier, QuestTier, QuestKind, StatKey } from "./config.ts";
 
 export interface UserRow {
   guild_id: string;
@@ -21,6 +21,8 @@ export interface UserRow {
   last_xp_at: number;
   idle_accrued_at: number;
   pity_counter: number;
+  loser_xp_today: number;
+  last_duel_day: string;
   created_at: number;
 }
 
@@ -66,6 +68,40 @@ export interface RaidRow {
   hp_max: number;
   hp_left: number;
   ends_at: number;
+}
+
+export interface QuestRow {
+  quest_id: number;
+  guild_id: string;
+  template_id: number;
+  tier: QuestTier;
+  members: string; // JSON array of user ids
+  eff: number;
+  started_at: number;
+  ends_at: number;
+}
+
+export interface QuestTemplateRow {
+  template_id: number;
+  name: string;
+  stat: StatKey;
+  kind: QuestKind;
+}
+
+export interface ServerQuestRow {
+  guild_id: string;
+  day: string;
+  template_id: number;
+  goal: number;
+  progress: number;
+}
+
+export interface ServerQuestClaimRow {
+  guild_id: string;
+  day: string;
+  user_id: string;
+  msgs: number;
+  claimed: number;
 }
 
 // Parsed guild_config.settings JSON.

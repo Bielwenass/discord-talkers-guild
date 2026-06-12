@@ -13,6 +13,7 @@ page covers Docker and Render.
 | `DISCORD_APP_ID` | Yes | — | Application (client) ID. |
 | `DEV_GUILD_ID` | No | — | Register commands to one guild for instant updates while developing. Leave unset in production to register globally. |
 | `DB_PATH` | No | `./talkers.db` | SQLite file path. Point this at a persistent disk in production. |
+| `DEVMODE` | No | — | Set to `1`/`true`/`yes`/`on` to register the privileged `/dev` command (set gold/xp). Leave unset in production. |
 
 Bun auto-loads `.env` locally; in production, set these as the host's environment
 variables. Never commit `.env`.

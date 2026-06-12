@@ -12,7 +12,9 @@ import { buildInventoryReply, salvageCommons } from "./commands/inventory.ts";
 import { equip, salvage, getItem } from "../game/inventory.ts";
 import { resolveDuel } from "../game/duels.ts";
 import { doPrestige } from "../game/prestige.ts";
+import { activeQuestFor } from "../game/quests.ts";
 import { duelOnCooldown, markDuel } from "./state.ts";
+import { getParty, joinParty, finalizeParty, userInPendingParty } from "./parties.ts";
 
 export async function handleComponent(interaction: MessageComponentInteraction): Promise<void> {
   if (!interaction.inGuild()) return;
@@ -26,6 +28,8 @@ export async function handleComponent(interaction: MessageComponentInteraction):
         return handleDuelButton(interaction, args);
       case "prestige":
         return handlePrestigeButton(interaction);
+      case "quest":
+        return handleQuestButton(interaction, args);
     }
   }
   if (interaction.isStringSelectMenu() && action === "inv") {
@@ -112,12 +116,57 @@ async function handleDuelButton(interaction: ButtonInteraction, args: string[]):
   }
   markDuel(challengerId!, targetId!, now);
   const r = outcome.result;
+  const loserLine =
+    r.loserXp > 0
+      ? `<@${r.loserId}> earns **${r.loserXp}** XP for the effort.`
+      : `<@${r.loserId}> has spent their daily loser-XP budget — no XP this time.`;
   await interaction.update({
     content:
       `⚔️ <@${r.winnerId}> defeats <@${r.loserId}>!\n` +
-      `Pot **${r.pot}** → winner gets **${r.payout}** (rake ${r.rake}).`,
+      `Pot **${r.pot}** → winner gets **${r.payout}** (rake ${r.rake}).\n` +
+      loserLine,
     components: [],
   });
+}
+
+async function handleQuestButton(interaction: ButtonInteraction, args: string[]): Promise<void> {
+  const [act, partyId] = args;
+  const party = getParty(partyId!);
+  if (!party) {
+    await interaction.reply({ content: "This party has already closed.", flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const guildId = interaction.guildId!;
+  const clicker = interaction.user.id;
+
+  if (act === "join") {
+    if (party.members.includes(clicker)) {
+      await interaction.reply({ content: "You're already in this party.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (activeQuestFor(guildId, clicker) || userInPendingParty(guildId, clicker)) {
+      await interaction.reply({ content: "❌ You already have a quest or pending party.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    joinParty(partyId!, clicker); // may auto-finalize when full (edits the lobby message)
+    const after = getParty(partyId!);
+    await interaction.reply({
+      content: after
+        ? `✅ Joined — ${after.members.length}/${4} adventurers.`
+        : "✅ Joined — the party was full and set out!",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (act === "pstart" || act === "pcancel") {
+    if (clicker !== party.openerId) {
+      await interaction.reply({ content: "Only the party opener can do that.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    await interaction.deferUpdate();
+    await finalizeParty(partyId!, act === "pstart" ? "manual" : "cancel");
+  }
 }
 
 async function handlePrestigeButton(interaction: ButtonInteraction): Promise<void> {

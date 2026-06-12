@@ -3,7 +3,7 @@ import { SlashCommandBuilder, type ChatInputCommandInteraction } from "discord.j
 import type { Command } from "./types.ts";
 import { tx } from "../../db/db.ts";
 import { nowS } from "../../util/time.ts";
-import { claimIdle, getOrCreateUser } from "../../game/users.ts";
+import { claimIdle, getOrCreateUser, userExists } from "../../game/users.ts";
 import { resolveExpeditionIfDue } from "../../game/expeditions.ts";
 import { profileEmbed } from "../embeds.ts";
 
@@ -21,10 +21,13 @@ export const profile: Command = {
     const guildId = interaction.guildId!;
     const target = interaction.options.getUser("user") ?? interaction.user;
     const now = nowS();
+    const isOwn = target.id === interaction.user.id;
+    // Greet first-timers viewing their own profile (before getOrCreateUser creates the row).
+    const firstTime = isOwn && !userExists(guildId, target.id);
 
     const user = tx(() => {
       // own profile: settle idle + any finished expedition first
-      if (target.id === interaction.user.id) {
+      if (isOwn) {
         claimIdle(guildId, target.id, now);
         resolveExpeditionIfDue(guildId, target.id, now);
       }
@@ -33,6 +36,9 @@ export const profile: Command = {
 
     const displayName =
       interaction.guild?.members.cache.get(target.id)?.displayName ?? target.username;
-    await interaction.reply({ embeds: [profileEmbed(user, displayName, now)] });
+    await interaction.reply({
+      content: firstTime ? "👋 Welcome to the guild! New here? Run **/guide** for a 30-second primer." : undefined,
+      embeds: [profileEmbed(user, displayName, now)],
+    });
   },
 };

@@ -1,5 +1,8 @@
 import type { Command } from "./types.ts";
+import { env } from "../../config.ts";
 import { profile } from "./profile.ts";
+import { guide } from "./guide.ts";
+import { quest } from "./quest.ts";
 import { claim } from "./claim.ts";
 import { pull } from "./pull.ts";
 import { inventory } from "./inventory.ts";
@@ -10,9 +13,12 @@ import { leaderboard } from "./leaderboard.ts";
 import { prestige } from "./prestige.ts";
 import { raid } from "./raid.ts";
 import { config } from "./config.ts";
+import { dev } from "./dev.ts";
 
 export const commands: Command[] = [
   profile,
+  guide,
+  quest,
   claim,
   pull,
   inventory,
@@ -23,6 +29,8 @@ export const commands: Command[] = [
   prestige,
   raid,
   config,
+  // Privileged set-gold/set-xp tools, only when DEVMODE is enabled.
+  ...(env.devMode ? [dev] : []),
 ];
 
 export const commandMap = new Map<string, Command>(commands.map((c) => [c.data.name, c]));

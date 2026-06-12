@@ -7,6 +7,7 @@ import { utcDayString } from "../util/time.ts";
 import { currentIdleRate, effectiveStats, getOrCreateUser, addGold } from "./users.ts";
 import { rollPull, type PullOutcome } from "./inventory.ts";
 import { EXPEDITIONS } from "../config.ts";
+import { raidStrDamageMult, raidStrikePct, prestigeMult } from "./formulas.ts";
 
 export function activeRaid(guildId: string): RaidRow | null {
   return getDb()
@@ -25,13 +26,34 @@ export function guildXpLast7Days(guildId: string, nowS: number): number {
   return row.xp;
 }
 
+/** Distinct users with >=1 counted message over the previous 7 days. */
+export function activeUsersLast7Days(guildId: string, nowS: number): number {
+  const cutoff = utcDayString(nowS - 7 * 86400);
+  const row = getDb()
+    .query(
+      `SELECT COUNT(DISTINCT user_id) AS n FROM activity_daily
+       WHERE guild_id = ? AND day >= ? AND msgs > 0`,
+    )
+    .get(guildId, cutoff) as { n: number };
+  return row.n;
+}
+
 export function spawnRaid(
   guildId: string,
   nowS: number,
 ): { ok: true; hp: number; endsAt: number } | { ok: false; reason: string } {
   if (activeRaid(guildId)) return { ok: false, reason: "A raid is already active." };
+  // addendum B.1: HP = max(2 * weekly_guild_xp, 1500 * active_users), floored so a
+  // boss is never trivial. The per-user floor keeps small/quiet servers meaningful.
   const guildXp = guildXpLast7Days(guildId, nowS);
-  const hp = Math.max(1000, Math.round(ECON.RAID_HP_PER_XP * guildXp));
+  const activeUsers = activeUsersLast7Days(guildId, nowS);
+  const hp = Math.round(
+    Math.max(
+      ECON.RAID_HP_FLOOR,
+      ECON.RAID_HP_XP_MULT * guildXp,
+      ECON.RAID_HP_PER_USER * activeUsers,
+    ),
+  );
   const endsAt = nowS + ECON.RAID_WINDOW_H * 3600;
   const db = getDb();
   db.transaction(() => {
@@ -47,8 +69,9 @@ export function spawnRaid(
 }
 
 /**
- * Apply XP as boss damage during an active window (design §9). Returns the
- * damage dealt and whether the boss just hit 0 HP (so the caller can resolve).
+ * Apply XP as boss damage during an active window (design §9). STR multiplies the
+ * earner's chat damage (addendum B.2): chat_damage = xp * (1 + 0.05 * STR). Returns
+ * the damage dealt and whether the boss just hit 0 HP (so the caller can resolve).
  */
 export function applyRaidDamage(
   guildId: string,
@@ -60,7 +83,9 @@ export function applyRaidDamage(
   if (!raid || raid.ends_at <= nowS || raid.hp_left <= 0 || xp <= 0) {
     return { dealt: 0, justKilled: false };
   }
-  const dealt = Math.min(xp, raid.hp_left);
+  const str = effectiveStats(getOrCreateUser(guildId, userId)).str;
+  const chatDamage = Math.round(xp * raidStrDamageMult(str));
+  const dealt = Math.min(chatDamage, raid.hp_left);
   const db = getDb();
   db.run(`UPDATE raids SET hp_left = hp_left - ? WHERE guild_id = ?`, [dealt, guildId]);
   db.run(
@@ -69,6 +94,46 @@ export function applyRaidDamage(
     [guildId, userId, dealt],
   );
   return { dealt, justKilled: raid.hp_left - dealt <= 0 };
+}
+
+export type StrikeResult =
+  | { ok: true; dealt: number; pct: number; justKilled: boolean }
+  | { ok: false; reason: string; cooldownS?: number };
+
+/**
+ * Active boss strike (addendum B.3). Percentage-of-max-HP damage so it self-balances
+ * across server sizes: strike_damage = HP_max * strike_pct * prestige_mult, where
+ * strike_pct = 1.2% + 0.10% * STR (capped 8%). One strike per RAID_STRIKE_COOLDOWN_S
+ * (4h) per user, only while a raid is live. Costs nothing.
+ */
+export function strikeRaid(guildId: string, userId: string, nowS: number): StrikeResult {
+  const raid = activeRaid(guildId);
+  if (!raid || raid.ends_at <= nowS || raid.hp_left <= 0) {
+    return { ok: false, reason: "There is no active raid to strike." };
+  }
+  const db = getDb();
+  const row = db
+    .query(`SELECT last_strike_at FROM raid_damage WHERE guild_id = ? AND user_id = ?`)
+    .get(guildId, userId) as { last_strike_at: number } | null;
+  const last = row?.last_strike_at ?? 0;
+  const remaining = ECON.RAID_STRIKE_COOLDOWN_S - (nowS - last);
+  if (last > 0 && remaining > 0) {
+    return { ok: false, reason: "Your strike is on cooldown.", cooldownS: remaining };
+  }
+
+  const user = getOrCreateUser(guildId, userId);
+  const pct = raidStrikePct(effectiveStats(user).str);
+  const raw = Math.round(raid.hp_max * pct * prestigeMult(user.prestige));
+  const dealt = Math.min(raw, raid.hp_left);
+
+  db.run(`UPDATE raids SET hp_left = hp_left - ? WHERE guild_id = ?`, [dealt, guildId]);
+  db.run(
+    `INSERT INTO raid_damage (guild_id, user_id, damage, last_strike_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(guild_id, user_id)
+       DO UPDATE SET damage = damage + excluded.damage, last_strike_at = excluded.last_strike_at`,
+    [guildId, userId, dealt, nowS],
+  );
+  return { ok: true, dealt, pct, justKilled: raid.hp_left - dealt <= 0 };
 }
 
 export interface RaidReward {

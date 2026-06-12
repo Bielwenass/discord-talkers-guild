@@ -39,8 +39,8 @@ src/
 
   db/
     db.ts               Database singleton (getDb) + tx() transaction wrapper.
-    schema.ts           initSchema: PRAGMAs + CREATE TABLE IF NOT EXISTS for every table.
-    seed.ts             Idempotent item-catalog seed (~40 items across slot x rarity).
+    schema.ts           initSchema: PRAGMAs + CREATE TABLE IF NOT EXISTS + additive column migrations.
+    seed.ts             Idempotent seeds: item catalog (~40 items) and quest templates.
 
   game/                 Pure logic, no discord.js imports, unit-tested.
     formulas.ts         XP, levels, gold, duel power/probability, stat cost.
@@ -49,8 +49,9 @@ src/
     inventory.ts        Gacha rolls, equip, salvage, gear score.
     gacha.ts            Rarity rolls with LUK shift and pity.
     expeditions.ts      Start and lazy-resolve idle timers.
-    duels.ts            Wager validation and duel resolution.
-    raids.ts            Boss spawn, damage, and reward distribution.
+    quests.ts           Daily board (deterministic offers), solo/party/server quests.
+    duels.ts            Wager validation, duel resolution, loser-XP daily budget.
+    raids.ts            Boss spawn, STR-scaled chat damage, /raid strike, rewards.
     prestige.ts         Level-gated reset for a permanent income bonus.
     guilds.ts           Per-guild settings (JSON in guild_config) + known guild ids.
 
@@ -61,6 +62,7 @@ src/
     embeds.ts           Shared embed builders (profile, leaderboard, pull, digest).
     components.ts        Shared button/select row builders.
     state.ts            In-memory caps and cooldowns (see below).
+    parties.ts          In-memory party-quest lobbies (Join/auto-start, see below).
     rewards.ts          Applies role rewards on level-up.
     raidAnnounce.ts     Raid announcements.
     events/
@@ -81,8 +83,13 @@ restart (they bound bursts, not balances):
 - **Reaction dedupe** — one social-XP credit per reactor per message.
 - **Reply caps** — bounded social XP per message.
 - **Duel pair cooldown** — one duel per pair per cooldown window.
+- **Party-quest lobbies** — open recruiting parties, with a 15-minute auto-start
+  timer (`parties.ts`). This timer is the one short-lived exception to "no timers";
+  losing a lobby on restart only drops an in-flight invite, never a started quest.
 
-All durable state (gold, XP, levels, inventory, expeditions, raids) is in SQLite.
+All durable state (gold, XP, levels, inventory, expeditions, quests, raids) is in
+SQLite. Started quests (including party quests, once launched) live in the `quests`
+table and resolve lazily on read like expeditions.
 
 ## Intents
 

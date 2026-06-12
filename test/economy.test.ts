@@ -13,6 +13,13 @@ import {
   statPointCost,
   duelPower,
   duelWinProbability,
+  duelLoserXp,
+  loserXpDailyBudget,
+  questEff,
+  questGoldRate,
+  questXpRate,
+  raidStrDamageMult,
+  raidStrikePct,
 } from "../src/game/formulas.ts";
 import { idleRate, accrueIdle } from "../src/game/idle.ts";
 import { ECON } from "../src/config.ts";
@@ -154,5 +161,52 @@ describe("duels (§8)", () => {
     expect(duelWinProbability(28, 28)).toBeCloseTo(0.5, 5);
     expect(duelWinProbability(30, 10)).toBeCloseTo(0.75, 5);
     expect(duelWinProbability(0, 0)).toBe(0.5); // degenerate guard
+  });
+
+  test("loser XP = 0.4 * wager * underdog * prestige (addendum A reference values)", () => {
+    expect(duelLoserXp(50, 1, 1, 0)).toBe(20); // even match, min wager
+    expect(duelLoserXp(500, 1, 1, 0)).toBe(200); // even match
+    expect(duelLoserXp(1000, 2, 1, 0)).toBe(800); // lost to a 2x stronger opponent
+  });
+
+  test("underdog multiplier clamps to [0.5, 2.0]", () => {
+    expect(duelLoserXp(100, 10, 1, 0)).toBe(80); // ratio 10 -> clamped to 2.0
+    expect(duelLoserXp(100, 1, 10, 0)).toBe(20); // ratio 0.1 -> clamped to 0.5
+  });
+
+  test("loser-XP prestige bonus and daily budget", () => {
+    expect(duelLoserXp(50, 1, 1, 5)).toBe(30); // 0.4*50 * (1 + 0.10*5) = 30
+    expect(loserXpDailyBudget(0)).toBe(1000);
+    expect(loserXpDailyBudget(5)).toBe(1500);
+  });
+});
+
+describe("quests (addendum C)", () => {
+  test("eff = 1 + 0.025*stat, capped at 3.0 (cap at 80)", () => {
+    expect(questEff(0)).toBeCloseTo(1, 9);
+    expect(questEff(20)).toBeCloseTo(1.5, 9);
+    expect(questEff(80)).toBeCloseTo(3, 9);
+    expect(questEff(1000)).toBeCloseTo(3, 9); // cap holds
+  });
+
+  test("per-hour rates scale with level", () => {
+    expect(questGoldRate(20)).toBeCloseTo(20, 9); // 8 + 0.6*20
+    expect(questXpRate(20)).toBeCloseTo(13, 9); // 5 + 0.4*20
+  });
+});
+
+describe("raids (addendum B)", () => {
+  test("STR multiplies chat damage: 1 + 0.05*STR", () => {
+    expect(raidStrDamageMult(0)).toBeCloseTo(1, 9);
+    expect(raidStrDamageMult(20)).toBeCloseTo(2, 9);
+    expect(raidStrDamageMult(40)).toBeCloseTo(3, 9);
+  });
+
+  test("strike pct = 1.2% + 0.10%*STR, capped at 8% (cap at STR 68)", () => {
+    expect(raidStrikePct(0)).toBeCloseTo(0.012, 9);
+    expect(raidStrikePct(5)).toBeCloseTo(0.017, 9);
+    expect(raidStrikePct(20)).toBeCloseTo(0.032, 9);
+    expect(raidStrikePct(68)).toBeCloseTo(0.08, 9);
+    expect(raidStrikePct(1000)).toBeCloseTo(0.08, 9); // cap holds
   });
 });

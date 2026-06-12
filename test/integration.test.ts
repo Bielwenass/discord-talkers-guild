@@ -12,6 +12,7 @@ let duels: typeof import("../src/game/duels.ts");
 let expeditions: typeof import("../src/game/expeditions.ts");
 let prestige: typeof import("../src/game/prestige.ts");
 let raids: typeof import("../src/game/raids.ts");
+let quests: typeof import("../src/game/quests.ts");
 let db: typeof import("../src/db/db.ts");
 
 const G = "guild1";
@@ -26,6 +27,7 @@ beforeAll(async () => {
   expeditions = await import("../src/game/expeditions.ts");
   prestige = await import("../src/game/prestige.ts");
   raids = await import("../src/game/raids.ts");
+  quests = await import("../src/game/quests.ts");
 });
 
 describe("users + grantXp", () => {
@@ -115,9 +117,15 @@ describe("duels", () => {
     expect(out.ok).toBe(true);
     if (out.ok) {
       expect(out.result.winnerId).toBe("p1");
+      expect(out.result.loserId).toBe("p2");
+      // Even match, no prestige: loser XP = 0.4 * 500 = 200 (addendum A).
+      expect(out.result.loserXp).toBe(200);
+      // Gold is conserved except for the rake (leaves) and the loser's XP-rider
+      // gold (xp/4, enters): a duel is no longer a strict sink.
+      const loserGold = Math.floor(out.result.loserXp / 4);
       const totalAfter =
         users.getOrCreateUser(G, "p1").gold + users.getOrCreateUser(G, "p2").gold;
-      expect(totalAfter).toBe(totalBefore - out.result.rake); // rake leaves the economy
+      expect(totalAfter).toBe(totalBefore - out.result.rake + loserGold);
     }
   });
 });
@@ -172,6 +180,114 @@ describe("idle digest (read-only preview)", () => {
   test("recentlyActiveUserIds includes users with recent activity", () => {
     const ids = users.recentlyActiveUserIds(G, now);
     expect(ids).toContain("digestu");
+  });
+});
+
+describe("duel loser-XP budget (addendum A)", () => {
+  test("a large loss can exhaust the daily budget; further losses pay 0 XP", () => {
+    db.getDb().run(
+      `UPDATE users SET gold=1000000, idle_accrued_at=?, loser_xp_today=0, last_duel_day='' WHERE guild_id=? AND user_id IN ('bud1','bud2')`,
+      [now, G],
+    );
+    users.getOrCreateUser(G, "bud1");
+    users.getOrCreateUser(G, "bud2");
+    db.getDb().run(`UPDATE users SET gold=1000000 WHERE guild_id=? AND user_id IN ('bud1','bud2')`, [G]);
+
+    // bud1 challenges, bud2 wins (rng=1 => challenger loses). Even match → 0.4*wager XP,
+    // but capped at the 1000/day budget. wager 5000 → 2000 uncapped → 1000 granted.
+    const first = duels.resolveDuel(G, "bud1", "bud2", 5000, now, () => 1);
+    expect(first.ok).toBe(true);
+    if (first.ok) {
+      expect(first.result.loserId).toBe("bud1");
+      expect(first.result.loserXp).toBe(1000); // capped at the daily budget
+      expect(first.result.loserXpBudgetLeft).toBe(0);
+    }
+    // Same day, bud1 loses again → budget already spent → 0 XP.
+    const second = duels.resolveDuel(G, "bud1", "bud2", 500, now + 1, () => 1);
+    expect(second.ok).toBe(true);
+    if (second.ok) {
+      expect(second.result.loserId).toBe("bud1");
+      expect(second.result.loserXp).toBe(0);
+    }
+    // Next UTC day, the budget resets, so the loss pays XP again (exact amount
+    // depends on the now-divergent power ratio, but it must be > 0).
+    const tomorrow = now + 86400;
+    const third = duels.resolveDuel(G, "bud1", "bud2", 500, tomorrow, () => 1);
+    expect(third.ok).toBe(true);
+    if (third.ok) expect(third.result.loserXp).toBeGreaterThan(0);
+  });
+});
+
+describe("quests (addendum C)", () => {
+  test("solo quest: start snapshots eff, resolves with gold + XP after ends_at", () => {
+    users.grantXp(G, "qsolo", 2000, { nowS: now, countedMsg: true }); // give some level
+    const offers = quests.dailyOffers(G, "qsolo", "2026-06-11");
+    expect(offers.length).toBe(3);
+    expect(new Set(offers.map((o) => o.template.stat)).size).toBeGreaterThanOrEqual(2); // C.2 constraint
+
+    const start = quests.startSoloQuest(G, "qsolo", 0, now);
+    expect(start.ok).toBe(true);
+    expect(quests.activeQuestFor(G, "qsolo")).not.toBeNull();
+    // not due yet
+    expect(quests.resolveQuestIfDue(G, "qsolo", now)).toBeNull();
+
+    const goldBefore = users.getOrCreateUser(G, "qsolo").gold;
+    // force resolution far in the future; rng=0 so any item roll fires deterministically
+    const res = quests.resolveQuestIfDue(G, "qsolo", now + 30 * 3600, () => 0);
+    expect(res).not.toBeNull();
+    expect(res!.rewards[0]!.gold).toBeGreaterThan(0);
+    expect(res!.rewards[0]!.xp).toBeGreaterThan(0);
+    expect(users.getOrCreateUser(G, "qsolo").gold).toBeGreaterThan(goldBefore);
+    expect(quests.activeQuestFor(G, "qsolo")).toBeNull(); // slot freed
+  });
+
+  test("deterministic offers: same seed yields the same board", () => {
+    const a = quests.dailyOffers(G, "stable", "2026-06-11");
+    const b = quests.dailyOffers(G, "stable", "2026-06-11");
+    expect(a.map((o) => [o.template.template_id, o.tier])).toEqual(
+      b.map((o) => [o.template.template_id, o.tier]),
+    );
+  });
+
+  test("server quest: progress, threshold, contributor gate, one claim", () => {
+    const sq = quests.ensureServerQuest(G, now);
+    expect(sq.goal).toBeGreaterThanOrEqual(50); // min goal
+    // qcontrib sends 3 counted messages
+    for (let i = 0; i < 3; i++) quests.recordServerQuestProgress(G, "qcontrib", now);
+    // force the goal to met for the test
+    db.getDb().run(`UPDATE server_quest SET progress = goal WHERE guild_id=? AND day=?`, [G, sq.day]);
+
+    const ok = quests.claimServerQuest(G, "qcontrib", now);
+    expect(ok.ok).toBe(true);
+    // second claim is rejected
+    const again = quests.claimServerQuest(G, "qcontrib", now);
+    expect(again.ok).toBe(false);
+    // a non-contributor (0 msgs) cannot claim
+    const none = quests.claimServerQuest(G, "qlurker", now);
+    expect(none.ok).toBe(false);
+  });
+});
+
+describe("raid strikes (addendum B.3)", () => {
+  test("strike deals %-of-max-HP, then is on a 4h cooldown", () => {
+    users.grantXp(G, "striker", 1000, { nowS: now, countedMsg: true });
+    db.getDb().run(`DELETE FROM raids WHERE guild_id=?`, [G]);
+    const spawn = raids.spawnRaid(G, now);
+    expect(spawn.ok).toBe(true);
+    if (spawn.ok) {
+      const first = raids.strikeRaid(G, "striker", now);
+      expect(first.ok).toBe(true);
+      if (first.ok) {
+        // STR 0 → 1.2% of max HP
+        expect(first.dealt).toBe(Math.min(Math.round(spawn.hp * 0.012), spawn.hp));
+      }
+      // immediate re-strike is on cooldown
+      const second = raids.strikeRaid(G, "striker", now + 60);
+      expect(second.ok).toBe(false);
+      // after 4h it is ready again
+      const third = raids.strikeRaid(G, "striker", now + 4 * 3600 + 1);
+      expect(third.ok).toBe(true);
+    }
   });
 });
 

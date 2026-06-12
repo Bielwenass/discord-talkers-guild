@@ -5,6 +5,7 @@ import { tx } from "../../db/db.ts";
 import { nowS } from "../../util/time.ts";
 import { claimIdle, getOrCreateUser } from "../../game/users.ts";
 import { resolveExpeditionIfDue } from "../../game/expeditions.ts";
+import { resolveQuestIfDue } from "../../game/quests.ts";
 import { pullEmbed } from "../embeds.ts";
 
 export const claim: Command = {
@@ -21,11 +22,12 @@ export const claim: Command = {
     const userId = interaction.user.id;
     const now = nowS();
 
-    const { claimed, exp, balance } = tx(() => {
+    const { claimed, exp, questRes, balance } = tx(() => {
       const exp = resolveExpeditionIfDue(guildId, userId, now);
+      const questRes = resolveQuestIfDue(guildId, userId, now);
       const claimed = claimIdle(guildId, userId, now);
       const balance = getOrCreateUser(guildId, userId).gold;
-      return { claimed, exp, balance };
+      return { claimed, exp, questRes, balance };
     });
 
     const embed = new EmbedBuilder()
@@ -43,6 +45,16 @@ export const claim: Command = {
         value: `**+${exp.gold}** gold` + (exp.items.length ? ` and ${exp.items.length} item(s):` : ""),
       });
       if (exp.items.length) embeds.push(pullEmbed(exp.items));
+    }
+    if (questRes) {
+      const mine = questRes.rewards.find((r) => r.userId === userId);
+      embed.addFields({
+        name: `✅ Quest complete: ${questRes.template.name}`,
+        value:
+          `**+${mine?.gold ?? 0}** gold · **+${mine?.xp ?? 0}** XP` +
+          (mine && mine.items.length ? ` and ${mine.items.length} item(s):` : ""),
+      });
+      if (mine && mine.items.length) embeds.push(pullEmbed(mine.items));
     }
 
     await interaction.reply({ embeds });

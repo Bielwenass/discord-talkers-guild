@@ -109,3 +109,66 @@ export function duelWinProbability(powerA: number, powerB: number): number {
   const denom = powerA + powerB;
   return denom <= 0 ? 0.5 : powerA / denom;
 }
+
+/** prestige_mult for loser XP & its budget = 1 + 0.10 * prestige (addendum A). */
+export function loserXpPrestigeMult(prestige: number): number {
+  return 1 + ECON.DUEL_LOSER_XP_PRESTIGE_PER * prestige;
+}
+
+/**
+ * Uncapped consolation XP for the duel loser (addendum A):
+ *   loser_xp = 0.4 * wager * underdog_mult * prestige_mult
+ *   underdog_mult = clamp(power_winner / power_loser, 0.5, 2.0)
+ *   prestige_mult = 1 + 0.10 * loser_prestige
+ * Losing to a stronger opponent pays more; the per-day budget cap is applied by
+ * the caller (it needs DB state). Winners earn no XP.
+ */
+export function duelLoserXp(
+  wager: number,
+  powerWinner: number,
+  powerLoser: number,
+  loserPrestige: number,
+): number {
+  const ratio = powerLoser > 0 ? powerWinner / powerLoser : 1;
+  const underdog = Math.max(ECON.DUEL_UNDERDOG_MIN, Math.min(ECON.DUEL_UNDERDOG_MAX, ratio));
+  return Math.round(
+    ECON.DUEL_LOSER_XP_COEFF * wager * underdog * loserXpPrestigeMult(loserPrestige),
+  );
+}
+
+/** Per-UTC-day loser-XP budget = 1000 * prestige_mult (addendum A). */
+export function loserXpDailyBudget(prestige: number): number {
+  return Math.round(ECON.DUEL_LOSER_XP_BUDGET_BASE * loserXpPrestigeMult(prestige));
+}
+
+// --- §C quests (addendum C) ---
+
+/** governing-stat efficiency: eff = 1 + 0.025 * stat, capped at 3.0 (cap at 80). */
+export function questEff(stat: number): number {
+  return Math.min(ECON.QUEST_EFF_CAP, 1 + ECON.QUEST_EFF_PER_STAT * Math.max(0, stat));
+}
+
+/** quest gold/hour = 8 + 0.6 * level. */
+export function questGoldRate(level: number): number {
+  return ECON.QUEST_GOLD_RATE_BASE + ECON.QUEST_GOLD_RATE_PER_LEVEL * level;
+}
+
+/** quest xp/hour = 5 + 0.4 * level. */
+export function questXpRate(level: number): number {
+  return ECON.QUEST_XP_RATE_BASE + ECON.QUEST_XP_RATE_PER_LEVEL * level;
+}
+
+// --- §9 raids (addendum B) ---
+
+/** chat-damage multiplier from STR: 1 + 0.05 * STR (20 STR = 2x, uncapped). */
+export function raidStrDamageMult(str: number): number {
+  return 1 + ECON.RAID_STR_DMG_PER * Math.max(0, str);
+}
+
+/** /raid strike share of max HP: 1.2% + 0.10% * STR, capped at 8% (cap at STR 68). */
+export function raidStrikePct(str: number): number {
+  return Math.min(
+    ECON.RAID_STRIKE_PCT_CAP,
+    ECON.RAID_STRIKE_PCT_BASE + ECON.RAID_STRIKE_PCT_PER_STR * Math.max(0, str),
+  );
+}

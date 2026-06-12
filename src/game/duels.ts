@@ -2,9 +2,10 @@
 // deltas are written atomically. Per-pair cooldown is enforced in the handler.
 import { getDb } from "../db/db.ts";
 import { ECON } from "../config.ts";
-import { duelPower, duelWinProbability } from "./formulas.ts";
-import { getOrCreateUser, claimIdle } from "./users.ts";
+import { duelPower, duelWinProbability, duelLoserXp, loserXpDailyBudget } from "./formulas.ts";
+import { getOrCreateUser, claimIdle, grantXp } from "./users.ts";
 import { gearScoreFor } from "./inventory.ts";
+import { utcDayString } from "../util/time.ts";
 
 export function powerOf(guildId: string, userId: string): number {
   const u = getOrCreateUser(guildId, userId);
@@ -43,6 +44,8 @@ export interface DuelResult {
   rake: number;
   payout: number; // gold paid to the winner from the pot
   winnerProbability: number;
+  loserXp: number; // consolation XP credited to the loser (after the daily budget cap)
+  loserXpBudgetLeft: number; // loser's remaining XP budget for the UTC day
 }
 
 /**
@@ -74,9 +77,21 @@ export function resolveDuel(
 
   const winnerId = challengerWins ? challengerId : targetId;
   const loserId = challengerWins ? targetId : challengerId;
+  const powerWinner = challengerWins ? pA : pB;
+  const powerLoser = challengerWins ? pB : pA;
   const pot = wager * 2;
   const payout = Math.round(pot * (1 - ECON.DUEL_RAKE));
   const rake = pot - payout;
+
+  // Loser XP, scaled by wager + underdog + prestige, then drawn from the loser's
+  // per-UTC-day budget (addendum A). A single big loss may consume the whole budget;
+  // once exhausted, further losses that day pay 0 XP (gold/rake still flow).
+  const loser = getOrCreateUser(guildId, loserId);
+  const today = utcDayString(nowS);
+  const spentToday = loser.last_duel_day === today ? loser.loser_xp_today : 0;
+  const budget = loserXpDailyBudget(loser.prestige);
+  const uncapped = duelLoserXp(wager, powerWinner, powerLoser, loser.prestige);
+  const loserXp = Math.max(0, Math.min(uncapped, budget - spentToday));
 
   db.transaction(() => {
     // both stake the wager, winner receives the payout
@@ -95,10 +110,25 @@ export function resolveDuel(
       guildId,
       winnerId,
     ]);
+    // The loser earns consolation XP (flows through levels/gold like any grant).
+    if (loserXp > 0) grantXp(guildId, loserId, loserXp, { nowS });
+    db.run(
+      `UPDATE users SET loser_xp_today = ?, last_duel_day = ? WHERE guild_id = ? AND user_id = ?`,
+      [spentToday + loserXp, today, guildId, loserId],
+    );
   })();
 
   return {
     ok: true,
-    result: { winnerId, loserId, pot, rake, payout, winnerProbability: pWin },
+    result: {
+      winnerId,
+      loserId,
+      pot,
+      rake,
+      payout,
+      winnerProbability: pWin,
+      loserXp,
+      loserXpBudgetLeft: budget - spentToday - loserXp,
+    },
   };
 }

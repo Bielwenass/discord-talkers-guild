@@ -3,7 +3,7 @@
 import { Database } from "bun:sqlite";
 import { env } from "../config.ts";
 import { initSchema } from "./schema.ts";
-import { seedItemDefs } from "./seed.ts";
+import { seedItemDefs, seedQuestTemplates } from "./seed.ts";
 
 let _db: Database | null = null;
 
@@ -12,6 +12,7 @@ export function getDb(): Database {
   const db = new Database(env.dbPath, { create: true });
   initSchema(db);
   seedItemDefs(db);
+  seedQuestTemplates(db);
   _db = db;
   return db;
 }

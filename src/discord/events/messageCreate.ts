@@ -12,6 +12,7 @@ import {
   grantXp,
 } from "../../game/users.ts";
 import { channelWeight } from "../../game/guilds.ts";
+import { recordServerQuestProgress } from "../../game/quests.ts";
 import { replyCounts } from "../state.ts";
 import { applyLevelRewards, applyRaidForGrant } from "../rewards.ts";
 
@@ -43,7 +44,9 @@ export async function onMessageCreate(message: Message): Promise<void> {
         prestige: user.prestige,
       }),
     );
-    return grantXp(guildId, userId, xp, { nowS: now, countedMsg: true, setLastXpAt: true });
+    const g = grantXp(guildId, userId, xp, { nowS: now, countedMsg: true, setLastXpAt: true });
+    recordServerQuestProgress(guildId, userId, now); // this counted msg advances the server quest
+    return g;
   });
 
   if (senderGrant) {

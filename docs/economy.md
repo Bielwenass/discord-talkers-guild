@@ -66,11 +66,16 @@ the nth purchased point rises geometrically:
 cost(n) = 500 * 1.15^n
 ```
 
-- **STR** adds `STR_DUEL_POWER` (2) duel power per point.
+- **STR** adds `STR_DUEL_POWER` (2) duel power per point, and is the raid stat: it
+  multiplies your boss chat damage (`1 + 0.05 * STR`) and powers `/raid strike`.
 - **INT** raises message XP (the `stat_mult` above).
 - **CHA** raises social XP received.
 - **LUK** shifts gacha weight off Common, by `LUK_WEIGHT_SHIFT` (0.5%) per point,
-  capped at `LUK_MAX_SHIFT` (20%).
+  capped at `LUK_MAX_SHIFT` (20%), and makes LUK (loot) quests guarantee an item.
+
+Beyond their headline effect, **every stat scales quests**: the governing stat of a
+quest sets its efficiency `eff = 1 + 0.025 * stat` (capped ×3). Stats never gate a
+quest — they only make it more efficient. See [Quests](#quests).
 
 ## Sinks (where value leaves)
 
@@ -119,12 +124,95 @@ up to their entire balance. A pair can duel once per `DUEL_COOLDOWN_S` (2 min by
 is auto-claimed for both players before affordability is checked, so the balances used
 are current — each player only needs to hold at least the wagered amount.
 
+Gold stays the winner's prize and the winner earns **no** XP; instead the **loser**
+earns XP (addendum A). Splitting the two rewards across the two players removes any
+XP-efficient win-trading configuration.
+
+```
+loser_xp      = round(0.4 * wager * underdog_mult * prestige_mult)
+underdog_mult = clamp(power_winner / power_loser, 0.5, 2.0)
+prestige_mult = 1 + 0.10 * loser_prestige        # the loser's own
+```
+
+Losing to a stronger opponent pays more. Reference: 50 g → 20 XP, 500 g → 200 XP,
+1,000 g against a 2× stronger opponent → 800 XP.
+
+**Daily budget (anti-farm).** Each member has a per-UTC-day loser-XP budget of
+`1000 * prestige_mult`. Loser XP draws it down; once exhausted, further losses that day
+pay 0 XP (gold and rake still flow). A single large loss may consume the whole budget at
+once — that is intended. The reset is lazy: the stored `last_duel_day` is compared to
+today on access (no cron). The XP flows through the normal grant path (levels, stat
+points, and gold = xp/4), so a duel is **no longer a guaranteed gold sink** — the loser's
+minted gold is a deliberate, budget-capped faucet.
+
 ### Raids
 
-A boss spawns with `HP = RAID_HP_PER_XP (40) * guild XP over the previous 7 days`,
-and stays up for `RAID_WINDOW_H` (72h). Damage is dealt by participating. On kill,
-each participant earns `RAID_PARTICIPANT_IDLE_H` (12h) of their idle rate, floored
-at `RAID_PARTICIPANT_MIN_GOLD` (200).
+A boss spawns and stays up for `RAID_WINDOW_H` (72h). Its HP is recalibrated
+(addendum B.1 — the old 40× formula produced bosses ~20–40× beyond reachable damage):
+
+```
+HP = max(2 * weekly_guild_xp, 1500 * active_users)
+```
+
+`weekly_guild_xp` is guild-wide XP over the previous 7 days; `active_users` is the
+distinct members with ≥1 counted message in that window. The per-user floor keeps bosses
+meaningful on small/quiet servers; an absolute floor of 1500 prevents a zero-HP boss.
+
+Damage comes from two sources:
+
+- **Chat (passive)** — XP earned during the window also damages the boss, scaled by STR:
+  `chat_damage = xp_earned * (1 + 0.05 * STR)` (20 STR = 2×, 40 STR = 3×, uncapped).
+- **`/raid strike` (active)** — a percentage of the boss's max HP, so it self-balances
+  across server sizes: `strike_damage = HP_max * strike_pct * prestige_mult`, where
+  `strike_pct = 1.2% + 0.10% * STR` capped at 8% (cap at STR 68). One strike per 4h per
+  user, only while a raid is live; strikes cost nothing and count toward the top-3 bonus.
+
+On kill, each participant earns `RAID_PARTICIPANT_IDLE_H` (12h) of their idle rate,
+floored at `RAID_PARTICIPANT_MIN_GOLD` (200), plus item rolls (an extra roll for the top
+3 by damage). On timeout: half gold, no items.
+
+### Quests
+
+Quests are *dealt* (a deterministic daily board) and *test a stat*, where expeditions are
+*chosen* and scale off idle rate. Stats never gate a quest — the governing stat only
+scales efficiency:
+
+```
+eff = 1 + 0.025 * governing_stat        # capped at 3.0 (cap at stat 80)
+```
+
+Each user sees **3 offers per UTC day** (spanning ≥2 governing stats) and holds **one
+active quest slot**. Offers are generated deterministically from
+`(guild_id, user_id, date)` — no storage, idempotent re-render, no reroll abuse.
+
+Every offer rolls a template (stat + kind) and a duration tier:
+
+| Tier | Base duration | Reward multiplier |
+|---|---|---|
+| Errand | 2h | ×1.0 |
+| Task | 6h | ×1.1 |
+| Undertaking | 12h | ×1.25 |
+
+Per-hour base rates scale with level: `gold_rate = 8 + 0.6 * level`,
+`xp_rate = 5 + 0.4 * level`. A reward is `rate * base_hours * tier_mult * prestige_mult`,
+then by **kind**:
+
+- **Bountiful** — fixed duration; gold, XP, and item chance are all × `eff`.
+- **Swift** — fixed (base) rewards; the duration is divided by `eff` (the gain is slot
+  turnover).
+
+An item rolls on completion at 10% (Bountiful: 10% × `eff`). **LUK quests are loot
+quests**: they guarantee an item and halve their gold.
+
+**Party (2–4).** Opened from a board offer; others Join. `eff` uses the **mean** of
+members' governing stat (composition matters). Every member receives full solo-tier
+rewards × `(1 + 0.10 * (member_count − 1))`, and the quest occupies all members' slots.
+Recruiting concludes when full or 15 minutes after opening (min 2, else it disbands).
+
+**Server quest.** One per guild per UTC day: a collective goal of
+`max(50, round(1.2 * trailing 7-day daily avg counted messages))`. Every member who
+contributes ≥3 counted messages may claim one Errand-tier payout × their own governing
+eff. No opt-in, no party mechanics — ambient collective pressure.
 
 ## Prestige
 
