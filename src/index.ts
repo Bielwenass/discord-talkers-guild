@@ -18,6 +18,10 @@ async function main(): Promise<void> {
 
   client.once(Events.ClientReady, (c) => {
     console.log(`Logged in as ${c.user.tag} (serving ${c.guilds.cache.size} guild(s)).`);
+    registerCommands(c).catch((err) => {
+      console.error("Failed to register commands:", err);
+      process.exit(1);
+    });
     startScheduler(client);
   });
 
@@ -32,7 +36,6 @@ async function main(): Promise<void> {
   });
   client.on(Events.Error, (err) => console.error("Client error:", err));
 
-  await registerCommands();
   await client.login(env.token);
 }
 
