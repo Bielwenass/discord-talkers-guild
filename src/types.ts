@@ -15,7 +15,7 @@ export interface UserRow {
   stat_points: number;
   bought_points: number;
   msg_count: number;
-  char_count: number;
+  // char_count removed (v1.2.1 — no longer tracked)
   replies_recv: number;
   reactions_recv: number;
   last_xp_at: number;
@@ -32,6 +32,8 @@ export interface ActivityRow {
   day: string;
   msgs: number;
   xp: number;
+  replies_recv: number;
+  reactions_recv: number;
 }
 
 export interface ItemDefRow {
@@ -39,6 +41,7 @@ export interface ItemDefRow {
   name: string;
   slot: Slot;
   rarity: Rarity;
+  primary: StatKey;
 }
 
 export interface InventoryRow {

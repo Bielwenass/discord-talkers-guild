@@ -76,7 +76,7 @@ describe("stat spread", () => {
   test("total points land within the rarity budget", () => {
     for (const rarity of RARITIES) {
       for (let i = 0; i < 50; i++) {
-        const spread = rollStatSpread(rarity);
+        const spread = rollStatSpread(rarity, "str");
         const total = gearScore(spread);
         expect(total).toBeGreaterThanOrEqual(RARITY_TABLE[rarity].budgetMin);
         expect(total).toBeLessThanOrEqual(RARITY_TABLE[rarity].budgetMax);

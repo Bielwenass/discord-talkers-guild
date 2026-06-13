@@ -1,12 +1,13 @@
-// Quests (addendum C). Quests are *dealt* (a deterministic daily board) and test a
-// stat; the governing stat only scales efficiency, never gates. Lazy throughout:
-// `ends_at` is written at start and resolved on the first interaction afterward.
-// No timers, no cron (the one exception — party auto-fill — is in-memory UI state).
+// Quests. Lazy throughout: `ends_at` is written at start
+// and resolved on the first interaction afterward. Each governing stat pays one
+// reward type exclusively (QUEST_PROFILES). Server quest pays out automatically
+// at midnight — no user-facing claim.
 import { getDb } from "../db/db.ts";
 import {
   ECON,
   QUEST_TIERS,
   QUEST_TIER_KEYS,
+  QUEST_PROFILES,
   type QuestTier,
   type StatKey,
 } from "../config.ts";
@@ -35,7 +36,7 @@ export function getTemplate(id: number): QuestTemplateRow | null {
     .get(id) as QuestTemplateRow | null;
 }
 
-// --- deterministic PRNG seeded from a string (offers need zero storage) ---
+// --- deterministic PRNG ---
 
 function hashSeed(s: string): number {
   let h = 2166136261 >>> 0;
@@ -56,7 +57,7 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-// --- daily board (addendum C.2) ---
+// --- daily board ---
 
 export interface QuestOffer {
   index: number; // 0-based slot on the board, used by /quest start
@@ -65,26 +66,28 @@ export interface QuestOffer {
 }
 
 /**
- * The user's 3 offers for a UTC day, generated deterministically from
- * (guild_id, user_id, day) — idempotent re-render, no storage, no reroll abuse.
- * The offers are constrained to span at least two governing stats.
+ * The user's 3 offers for a UTC day, generated deterministically.
+ * Guaranteed to span 3 distinct governing stats.
  */
 export function dailyOffers(guildId: string, userId: string, day: string): QuestOffer[] {
   const templates = allTemplates();
   const rng = mulberry32(hashSeed(`${guildId}:${userId}:${day}`));
 
-  // deterministic Fisher-Yates shuffle
   const order = templates.slice();
   for (let i = order.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
     [order[i], order[j]] = [order[j]!, order[i]!];
   }
-  const picks = order.slice(0, ECON.QUEST_OFFERS_PER_DAY);
 
-  // enforce >=2 governing stats
-  if (new Set(picks.map((p) => p.stat)).size < 2) {
-    const diff = order.find((t) => t.stat !== picks[0]!.stat);
-    if (diff) picks[picks.length - 1] = diff;
+  // pick 3 with distinct governing stats
+  const picks: QuestTemplateRow[] = [];
+  const usedStats = new Set<string>();
+  for (const t of order) {
+    if (!usedStats.has(t.stat)) {
+      picks.push(t);
+      usedStats.add(t.stat);
+      if (picks.length === ECON.QUEST_OFFERS_PER_DAY) break;
+    }
   }
 
   return picks.map((template, index) => ({
@@ -105,7 +108,7 @@ export function activeQuestFor(guildId: string, userId: string): QuestRow | null
 
 function questDurationS(tier: QuestTier, kind: string, eff: number): number {
   const baseHours = QUEST_TIERS[tier].hours;
-  // Swift: fixed rewards, duration ÷ eff. Bountiful: fixed duration, rewards × eff.
+  // swift: shorter duration (÷ eff); bountiful: full duration. Eff applies to rewards in both.
   const hours = kind === "swift" ? baseHours / eff : baseHours;
   return Math.round(hours * 3600);
 }
@@ -164,7 +167,7 @@ export function startSoloQuest(
 }
 
 /**
- * Start a party quest (addendum C.5). Party eff = questEff(max_stat + 0.20 * sum_of_rest):
+ * Start a party quest. Party eff = questEff(max_stat + 0.20 * sum_of_rest):
  * the strongest member sets the baseline and every other member contributes 20% of their
  * stat on top. Shared by all members for both duration and rewards.
  */
@@ -203,8 +206,8 @@ export interface OfferPreview {
   durationS: number;
   gold: number;
   xp: number;
-  itemPct: number;
-  guaranteedItem: boolean;
+  itemPct: number;       // first-roll item chance for LUK quests; 0 for others
+  secondRollPct: number; // second-roll chance for LUK quests; 0 for others
 }
 
 /** Project a solo offer's reward for the board, without granting anything. */
@@ -218,26 +221,27 @@ export function previewOffer(
   const eff = questEff(effectiveStats(user)[offer.template.stat]);
   const cfg = QUEST_TIERS[offer.tier];
   const pm = prestigeMult(user.prestige);
-  let gold = questGoldRate(user.level) * cfg.hours * cfg.mult * pm;
-  let xp = questXpRate(user.level) * cfg.hours * cfg.mult * pm;
-  let itemChance = ECON.QUEST_ITEM_CHANCE;
-  if (offer.template.kind === "bountiful") {
-    gold *= eff;
-    xp *= eff;
-    itemChance *= eff;
+  const profile = QUEST_PROFILES[offer.template.stat];
+  const soloMult = profile.soloMult ?? 1.0;
+
+  const baseGold = questGoldRate(user.level) * cfg.hours * cfg.mult * pm;
+  const baseXp   = questXpRate(user.level)   * cfg.hours * cfg.mult * pm;
+
+  let itemPct = 0;
+  let secondRollPct = 0;
+  if (profile.itemChance) {
+    const ic = profile.itemChance;
+    itemPct = Math.min(1.0, ic[offer.tier] * eff);
+    secondRollPct = Math.min(1.0, ic.secondRoll * eff);
   }
-  let guaranteedItem = false;
-  if (offer.template.stat === "luk") {
-    gold *= 0.5;
-    guaranteedItem = true;
-  }
+
   return {
     eff,
     durationS: questDurationS(offer.tier, offer.template.kind, eff),
-    gold: Math.round(gold),
-    xp: Math.round(xp),
-    itemPct: Math.min(1, itemChance),
-    guaranteedItem,
+    gold: Math.round(baseGold * profile.gold * eff * soloMult),
+    xp:   Math.round(baseXp   * profile.xp   * eff * soloMult),
+    itemPct,
+    secondRollPct,
   };
 }
 
@@ -259,12 +263,6 @@ export interface QuestResolution {
   rewards: QuestMemberReward[];
 }
 
-/**
- * Compute and grant one member's quest reward. Rates scale off the member's own
- * level/prestige; each member's eff is computed from their own governing stat so
- * high-stat members are never penalised for joining weaker parties. Party size
- * bonus and Bountiful/LUK rules still apply as normal.
- */
 function grantMemberReward(
   guildId: string,
   userId: string,
@@ -278,35 +276,35 @@ function grantMemberReward(
   const user = getOrCreateUser(guildId, userId);
   const cfg = QUEST_TIERS[tier];
   const pm = prestigeMult(user.prestige);
-  const partyBonus = 1 + ECON.QUEST_PARTY_BONUS_PER_MEMBER * (memberCount - 1);
+  const profile = QUEST_PROFILES[template.stat];
 
-  let gold = questGoldRate(user.level) * cfg.hours * cfg.mult * pm * partyBonus;
-  let xp = questXpRate(user.level) * cfg.hours * cfg.mult * pm * partyBonus;
-  let itemChance = ECON.QUEST_ITEM_CHANCE;
+  const bonusPerMember = profile.partyBonusPerMember ?? ECON.QUEST_PARTY_BONUS_PER_MEMBER;
+  const partyBonus = 1 + bonusPerMember * (memberCount - 1);
+  const isSolo = memberCount === 1;
+  const soloMult = isSolo ? (profile.soloMult ?? 1.0) : 1.0;
 
-  if (template.kind === "bountiful") {
-    gold *= eff;
-    xp *= eff;
-    itemChance *= eff;
-  }
+  const baseGold = questGoldRate(user.level) * cfg.hours * cfg.mult * pm;
+  const baseXp   = questXpRate(user.level)   * cfg.hours * cfg.mult * pm;
 
-  let guaranteedItem = false;
-  if (template.stat === "luk") {
-    gold *= 0.5; // LUK quests are loot quests
-    guaranteedItem = true;
-  }
-
-  gold = Math.max(0, Math.round(gold));
-  xp = Math.max(0, Math.round(xp));
+  const gold = Math.max(0, Math.round(baseGold * profile.gold * eff * partyBonus * soloMult));
+  const xp   = Math.max(0, Math.round(baseXp   * profile.xp   * eff * partyBonus * soloMult));
 
   const items: PullOutcome[] = [];
+  if (profile.itemChance) {
+    const ic = profile.itemChance;
+    const firstChance = Math.min(1.0, ic[tier] * eff);
+    if (rng() < firstChance) {
   const luk = effectiveStats(user).luk;
-  if (guaranteedItem || rng() < itemChance) {
+      items.push(rollPull(guildId, userId, luk, 0, nowS));
+      const secondChance = Math.min(1.0, ic.secondRoll * eff);
+      if (rng() < secondChance) {
     items.push(rollPull(guildId, userId, luk, 0, nowS));
+      }
+    }
   }
 
-  addGold(guildId, userId, gold);
-  if (xp > 0) grantXp(guildId, userId, xp, { nowS }); // levels/stat points; gold rider (xp/4) is a minor bonus
+  if (gold > 0) addGold(guildId, userId, gold);
+  if (xp > 0) grantXp(guildId, userId, xp, { nowS });
 
   return { userId, gold, xp, items };
 }
@@ -346,7 +344,7 @@ export function resolveQuestIfDue(
   return resolveQuest(quest, nowS, rng);
 }
 
-// --- server quest (addendum C.5) ---
+// --- server quest ---
 
 function pickServerTemplate(guildId: string, day: string): QuestTemplateRow {
   const templates = allTemplates();
@@ -406,60 +404,112 @@ export function recordServerQuestProgress(guildId: string, userId: string, nowS:
 export interface ServerQuestStatus {
   quest: ServerQuestRow;
   template: QuestTemplateRow;
+  completion: number;
   myMsgs: number;
-  claimed: boolean;
-  met: boolean;
-  canClaim: boolean;
+  isContributor: boolean;
 }
 
 export function serverQuestStatus(guildId: string, userId: string, nowS: number): ServerQuestStatus {
   const sq = ensureServerQuest(guildId, nowS);
   const claim = getDb()
-    .query(`SELECT msgs, claimed FROM server_quest_claims WHERE guild_id = ? AND day = ? AND user_id = ?`)
-    .get(guildId, sq.day, userId) as { msgs: number; claimed: number } | null;
+    .query(`SELECT msgs FROM server_quest_claims WHERE guild_id = ? AND day = ? AND user_id = ?`)
+    .get(guildId, sq.day, userId) as { msgs: number } | null;
   const myMsgs = claim?.msgs ?? 0;
-  const claimed = !!claim?.claimed;
-  const met = sq.progress >= sq.goal;
+  const completion = Math.min(1.5, Math.max(0, sq.progress / sq.goal));
   return {
     quest: sq,
     template: getTemplate(sq.template_id)!,
+    completion,
     myMsgs,
-    claimed,
-    met,
-    canClaim: met && !claimed && myMsgs >= ECON.QUEST_SERVER_MIN_MSGS,
+    isContributor: myMsgs >= ECON.QUEST_SERVER_MIN_MSGS,
   };
 }
 
-/** Claim the server quest: one Errand-tier payout × the user's own governing-stat eff. */
-export function claimServerQuest(
+/**
+ * Automatic server-quest payout for a guild's completed day (called at midnight).
+ * Contributors (≥3 counted msgs): Task-tier × their eff × completion.
+ * Bystanders (≥1 msg in trailing 14d, not contributors): half payout, eff=1.0.
+ * Returns summary lines for the leaderboard post.
+ */
+export function payServerQuestForGuild(
   guildId: string,
-  userId: string,
+  day: string,
   nowS: number,
-): { ok: true; gold: number; xp: number; stat: StatKey; eff: number } | { ok: false; reason: string } {
-  const st = serverQuestStatus(guildId, userId, nowS);
-  if (!st.met) {
-    return { ok: false, reason: `The guild goal isn't met yet (${st.quest.progress}/${st.quest.goal}).` };
-  }
-  if (st.myMsgs < ECON.QUEST_SERVER_MIN_MSGS) {
-    return { ok: false, reason: `You need at least ${ECON.QUEST_SERVER_MIN_MSGS} counted messages (you have ${st.myMsgs}).` };
-  }
-  if (st.claimed) return { ok: false, reason: "You already claimed today's server quest." };
+): { lines: string[] } {
+  const db = getDb();
+  const sq = db
+    .query(`SELECT * FROM server_quest WHERE guild_id = ? AND day = ?`)
+    .get(guildId, day) as ServerQuestRow | null;
 
-  const user = getOrCreateUser(guildId, userId);
-  const eff = questEff(effectiveStats(user)[st.template.stat]);
-  const pm = prestigeMult(user.prestige);
-  const baseHours = QUEST_TIERS.errand.hours;
-  const gold = Math.round(questGoldRate(user.level) * baseHours * QUEST_TIERS.errand.mult * pm * eff);
-  const xp = Math.round(questXpRate(user.level) * baseHours * QUEST_TIERS.errand.mult * pm * eff);
+  if (!sq) return { lines: [] };
 
-  getDb().transaction(() => {
-    addGold(guildId, userId, gold);
-    if (xp > 0) grantXp(guildId, userId, xp, { nowS });
-    getDb().run(
+  const completion = Math.min(1.5, Math.max(0, sq.progress / sq.goal));
+  if (completion < 0.5) {
+    return {
+      lines: [
+        `🏰 **Server quest** — ${sq.progress}/${sq.goal} messages — threshold not reached (need ≥50%).`,
+      ],
+    };
+  }
+
+  const template = getTemplate(sq.template_id)!;
+  const taskHours = QUEST_TIERS.task.hours;
+  const taskMult  = QUEST_TIERS.task.mult;
+
+  // Contributors: unclaimed rows with enough msgs
+  const contributors = db
+    .query(
+      `SELECT user_id FROM server_quest_claims
+       WHERE guild_id = ? AND day = ? AND msgs >= ? AND claimed = 0`,
+    )
+    .all(guildId, day, ECON.QUEST_SERVER_MIN_MSGS) as { user_id: string }[];
+
+  const contributorSet = new Set(contributors.map((r) => r.user_id));
+
+  // Bystanders: any user active in trailing 14 days (excluding contributors)
+  const cutoff = utcDayString(nowS - 14 * 86400);
+  const recentUsers = db
+    .query(
+      `SELECT DISTINCT user_id FROM activity_daily WHERE guild_id = ? AND day >= ? AND day <= ?`,
+    )
+    .all(guildId, cutoff, day) as { user_id: string }[];
+
+  const bystanders = recentUsers.filter((r) => !contributorSet.has(r.user_id));
+
+  let cCount = 0;
+  let bCount = 0;
+
+  db.transaction(() => {
+    for (const { user_id } of contributors) {
+      const user = getOrCreateUser(guildId, user_id);
+      const eff = questEff(effectiveStats(user)[template.stat]);
+      const pm  = prestigeMult(user.prestige);
+      const gold = Math.round(questGoldRate(user.level) * taskHours * taskMult * pm * eff * completion);
+      const xp   = Math.round(questXpRate(user.level)   * taskHours * taskMult * pm * eff * completion);
+      if (gold > 0) addGold(guildId, user_id, gold);
+      if (xp   > 0) grantXp(guildId, user_id, xp, { nowS });
+      db.run(
       `UPDATE server_quest_claims SET claimed = 1 WHERE guild_id = ? AND day = ? AND user_id = ?`,
-      [guildId, st.quest.day, userId],
-    );
+        [guildId, day, user_id],
+      );
+      cCount++;
+    }
+
+    for (const { user_id } of bystanders) {
+      const user = getOrCreateUser(guildId, user_id);
+      const pm  = prestigeMult(user.prestige);
+      const gold = Math.round(questGoldRate(user.level) * taskHours * taskMult * pm * 0.5 * completion);
+      const xp   = Math.round(questXpRate(user.level)   * taskHours * taskMult * pm * 0.5 * completion);
+      if (gold > 0) addGold(guildId, user_id, gold);
+      if (xp   > 0) grantXp(guildId, user_id, xp, { nowS });
+      bCount++;
+    }
   })();
 
-  return { ok: true, gold, xp, stat: st.template.stat, eff };
+  return {
+    lines: [
+      `🏰 **Server quest** — ${sq.progress}/${sq.goal} · completion ×${completion.toFixed(2)}` +
+        ` — ${cCount} contributor(s) + ${bCount} bystander(s) paid.`,
+    ],
+  };
 }

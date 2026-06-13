@@ -1,151 +1,161 @@
-// Static item catalog (design §6). Names per slot × rarity; the stat spread is
-// rolled at drop time, not stored here. Idempotent: only seeds an empty table.
+// Static item catalog (design §6 / v1.2.1). Primary stat is fixed per item.
+// Idempotent: upserts so existing rows get their primary stat updated.
 import type { Database } from "bun:sqlite";
 import type { Rarity, Slot, StatKey, QuestKind } from "../config.ts";
 
-type Def = { name: string; slot: Slot; rarity: Rarity };
-
-const NAMES: Record<Slot, Record<Rarity, string[]>> = {
+export type ItemSeed = { name: string; primary: StatKey };
+export const NAMES: Record<Slot, Record<Rarity, ItemSeed[]>> = {
   weapon: {
+    // 5/8 STR
     common: [
-      "Rusty Dagger",
-      "Worn Shortsword",
-      "Cracked Club",
-      "Bent Pitchfork",
-      "Splintered Spear",
-      "Notched Hatchet",
-      "Threshing Flail",
-      "Cobbler's Hammer",
+      { name: "Worn Shortsword", primary: "str" },
+      { name: "Cracked Club", primary: "str" },
+      { name: "Splintered Spear", primary: "str" },
+      { name: "Notched Hatchet", primary: "str" },
+      { name: "Threshing Flail", primary: "str" },
+      { name: "Rusty Dagger", primary: "luk" },
+      { name: "Bent Pitchfork", primary: "cha" }, // the rabble-rouser's standard
+      { name: "Cobbler's Hammer", primary: "int" },
     ],
+    // 5/8 STR
     uncommon: [
-      "Iron Mace",
-      "Hunter's Bow",
-      "Balanced Sabre",
-      "Footman's Halberd",
-      "Oaken Quarterstaff",
-      "Riveted Morningstar",
-      "Watchman's Billhook",
-      "Bronze Falchion",
+      { name: "Iron Mace", primary: "str" },
+      { name: "Footman's Halberd", primary: "str" },
+      { name: "Riveted Morningstar", primary: "str" },
+      { name: "Watchman's Billhook", primary: "str" },
+      { name: "Bronze Falchion", primary: "str" },
+      { name: "Hunter's Bow", primary: "luk" },
+      { name: "Balanced Sabre", primary: "cha" }, // the duelist's flair
+      { name: "Oaken Quarterstaff", primary: "int" }, // the wandering scholar's arm
     ],
+    // 4/6 STR
     rare: [
-      "Silver Rapier",
-      "Runed Warhammer",
-      "Frostbite Axe",
-      "Vesper Blade",
-      "Pilgrim's Bane",
-      "Serpentine Estoc",
+      { name: "Frostbite Axe", primary: "str" },
+      { name: "Pilgrim's Bane", primary: "str" },
+      { name: "Runed Warhammer", primary: "str" },
+      { name: "Serpentine Estoc", primary: "str" },
+      { name: "Silver Rapier", primary: "cha" },
+      { name: "Vesper Blade", primary: "int" },
     ],
+    // 2/4 STR
     epic: [
-      "Stormcaller Glaive",
-      "Voidpiercer Lance",
-      "Litany of Edges",
-      "Hollowfang Scythe",
+      { name: "Voidpiercer Lance", primary: "str" },
+      { name: "Hollowfang Scythe", primary: "str" },
+      { name: "Stormcaller Glaive", primary: "int" },
+      { name: "Litany of Edges", primary: "cha" },
     ],
+    // 2/4 STR
     legendary: [
-      "Dawnbreaker, Sword of Kings",
-      "Eclipse Reaver",
-      "Last Psalm, the Silencing Blade",
-      "Ruin of Crowns",
+      { name: "Dawnbreaker, Sword of Kings", primary: "str" },
+      { name: "Ruin of Crowns", primary: "str" },
+      { name: "Last Psalm, the Silencing Blade", primary: "int" },
+      { name: "Eclipse Reaver", primary: "luk" },
     ],
   },
+
+  // "garb" — everyday wear and vestments; battle pieces are the STR exceptions
   armor: {
     common: [
-      "Tattered Tunic",
-      "Padded Vest",
-      "Leather Jerkin",
-      "Moth-Eaten Cloak",
-      "Patchwork Gambeson",
-      "Drover's Coat",
-      "Salt-Stained Surcoat",
-      "Friar's Habit",
+      { name: "Tattered Tunic", primary: "luk" },
+      { name: "Moth-Eaten Cloak", primary: "luk" },
+      { name: "Homespun Robe", primary: "int" },
+      { name: "Friar's Habit", primary: "int" },
+      { name: "Drover's Coat", primary: "cha" },
+      { name: "Salt-Stained Surcoat", primary: "cha" },
+      { name: "Almsgiver's Shawl", primary: "cha" },
+      { name: "Patchwork Gambeson", primary: "str" }, // battle piece
     ],
     uncommon: [
-      "Chainmail Shirt",
-      "Scaled Hauberk",
-      "Reinforced Brigandine",
-      "Boiled Leather Cuirass",
-      "Pikeman's Plackart",
-      "Wayfarer's Mantle",
-      "Studded Vestments",
-      "Bordered Tabard",
+      { name: "Scholar's Gown", primary: "int" },
+      { name: "Cartographer's Greatcoat", primary: "int" },
+      { name: "Studded Vestments", primary: "int" },
+      { name: "Chorister's Cassock", primary: "cha" },
+      { name: "Velvet Doublet", primary: "cha" },
+      { name: "Bordered Tabard", primary: "cha" },
+      { name: "Wayfarer's Mantle", primary: "luk" },
+      { name: "Chainmail Shirt", primary: "str" }, // battle piece
     ],
     rare: [
-      "Mithril Plate",
-      "Wardens Cuirass",
-      "Dragonhide Mantle",
-      "Cathedral Mail",
-      "Gravewrought Harness",
-      "Cloak of the Quiet Hours",
+      { name: "Magister's Robe", primary: "int" },
+      { name: "Cloak of the Quiet Hours", primary: "int" },
+      { name: "Cathedral Mail", primary: "cha" },
+      { name: "Courtier's Brocade", primary: "cha" },
+      { name: "Gambler's Longcoat", primary: "luk" },
+      { name: "Dragonhide Mantle", primary: "str" }, // battle piece
     ],
     epic: [
-      "Aegis of the Bastion",
-      "Phoenix Carapace",
-      "Raiment of the Unburned Saint",
-      "Nightfall Pallium",
+      { name: "Nightfall Pallium", primary: "int" },
+      { name: "Raiment of the Unburned Saint", primary: "cha" },
+      { name: "Phoenix-Feather Mantle", primary: "luk" },
+      { name: "Aegis of the Bastion", primary: "str" }, // battle piece
     ],
     legendary: [
-      "Bulwark of the Eternal Watch",
-      "Titanforged Aegis",
-      "Shroud of the First Vigil",
-      "Mantle of the Undying Choir",
+      { name: "Shroud of the First Vigil", primary: "int" },
+      { name: "Mantle of the Undying Choir", primary: "cha" },
+      { name: "Beggar-King's Regalia", primary: "luk" },
+      { name: "Bulwark of the Eternal Watch", primary: "str" }, // THE battle outfit
     ],
   },
+
+  // the wildcard slot — broad spread, slight LUK lean
   trinket: {
     common: [
-      "Chipped Bead",
-      "Copper Ring",
-      "Frayed Charm",
-      "Bent Horseshoe Nail",
-      "Wax-Sealed Locket",
-      "River Pebble",
-      "Knotted Prayer Cord",
-      "Tin Pilgrim Badge",
+      { name: "Chipped Bead", primary: "luk" },
+      { name: "Frayed Charm", primary: "luk" },
+      { name: "Bent Horseshoe Nail", primary: "luk" },
+      { name: "Copper Ring", primary: "cha" },
+      { name: "Wax-Sealed Locket", primary: "cha" },
+      { name: "Tin Pilgrim Badge", primary: "cha" },
+      { name: "Knotted Prayer Cord", primary: "int" },
+      { name: "River Pebble", primary: "str" },
     ],
     uncommon: [
-      "Jade Amulet",
-      "Owl Feather Talisman",
-      "Lucky Coin",
-      "Reliquary Splinter",
-      "Hawthorn Rosary",
-      "Merchant's Weighted Die",
-      "Vial of Holy Water",
-      "Signet of the Lesser House",
+      { name: "Lucky Coin", primary: "luk" },
+      { name: "Reliquary Splinter", primary: "luk" },
+      { name: "Merchant's Weighted Die", primary: "luk" },
+      { name: "Jade Amulet", primary: "int" },
+      { name: "Owl Feather Talisman", primary: "int" },
+      { name: "Vial of Holy Water", primary: "int" },
+      { name: "Hawthorn Rosary", primary: "cha" },
+      { name: "Signet of the Lesser House", primary: "cha" },
     ],
     rare: [
-      "Sapphire Sigil",
-      "Band of Insight",
-      "Emberglass Locket",
-      "Martyr's Knucklebone",
-      "Astrolabe of the Drowned Scholar",
-      "Censer of Cold Smoke",
+      { name: "Band of Insight", primary: "int" },
+      { name: "Astrolabe of the Drowned Scholar", primary: "int" },
+      { name: "Sapphire Sigil", primary: "cha" },
+      { name: "Emberglass Locket", primary: "cha" },
+      { name: "Censer of Cold Smoke", primary: "luk" },
+      { name: "Martyr's Knucklebone", primary: "str" },
     ],
     epic: [
-      "Oracle's Eye",
-      "Heart of the Tempest",
-      "Key to the Seventh Seal",
-      "Bell of the Sunken Parish",
+      { name: "Oracle's Eye", primary: "int" },
+      { name: "Bell of the Sunken Parish", primary: "cha" },
+      { name: "Key to the Seventh Seal", primary: "luk" },
+      { name: "Heart of the Tempest", primary: "str" },
     ],
     legendary: [
-      "Crown of Boundless Fortune",
-      "Worldroot Pendant",
-      "The Unspent Hour",
-      "Grail of the Hollow Star",
+      { name: "The Unspent Hour", primary: "int" },
+      { name: "Grail of the Hollow Star", primary: "cha" },
+      { name: "Crown of Boundless Fortune", primary: "luk" },
+      { name: "Worldroot Pendant", primary: "str" },
     ],
   },
 };
 
 export function seedItemDefs(db: Database): void {
+  // ON CONFLICT upserts primary stat so existing rows (from old DBs) get backfilled.
   const insert = db.prepare(
-    `INSERT OR IGNORE INTO item_defs (name, slot, rarity) VALUES (?, ?, ?)`,
+    `INSERT INTO item_defs (name, slot, rarity, "primary") VALUES (?, ?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET "primary" = excluded."primary"`,
   );
-  const defs: Def[] = [];
+  db.transaction(() => {
   for (const slot of Object.keys(NAMES) as Slot[]) {
     for (const rarity of Object.keys(NAMES[slot]) as Rarity[]) {
-      for (const name of NAMES[slot][rarity]) defs.push({ name, slot, rarity });
+        for (const { name, primary } of NAMES[slot][rarity]) {
+          insert.run(name, slot, rarity, primary);
+        }
     }
   }
-  db.transaction(() => {
-    for (const d of defs) insert.run(d.name, d.slot, d.rarity);
   })();
 }
 

@@ -78,7 +78,7 @@ export interface GrantResult {
 /**
  * Apply a pre-computed XP grant: writes XP + gold (=xp/4), recomputes level,
  * awards stat points / free-pull credits / role thresholds, and books the XP
- * into activity_daily for the given UTC day. `countedMsg` bumps activity msgs.
+ * into activity_daily. `countedMsg` bumps activity msgs.
  */
 export function grantXp(
   guildId: string,
@@ -134,45 +134,68 @@ export function grantXp(
   };
 }
 
-/** Always-on message stat bump (msg_count/char_count), independent of XP cooldown. */
-export function bumpMessageStats(guildId: string, userId: string, chars: number): void {
+/** Increment msg_count (always, even when bucket rejects). */
+export function bumpMessageStats(guildId: string, userId: string): void {
   getDb().run(
-    `UPDATE users SET msg_count = msg_count + 1, char_count = char_count + ?
-     WHERE guild_id = ? AND user_id = ?`,
-    [chars, guildId, userId],
+    `UPDATE users SET msg_count = msg_count + 1 WHERE guild_id = ? AND user_id = ?`,
+    [guildId, userId],
   );
 }
 
-export function bumpRepliesRecv(guildId: string, userId: string): void {
-  getDb().run(
+export function bumpRepliesRecv(guildId: string, userId: string, nowS: number): void {
+  const day = utcDayString(nowS);
+  const db = getDb();
+  db.run(
     `UPDATE users SET replies_recv = replies_recv + 1 WHERE guild_id = ? AND user_id = ?`,
     [guildId, userId],
   );
-}
-
-export function bumpReactionsRecv(guildId: string, userId: string): void {
-  getDb().run(
-    `UPDATE users SET reactions_recv = reactions_recv + 1 WHERE guild_id = ? AND user_id = ?`,
-    [guildId, userId],
+  db.run(
+    `INSERT INTO activity_daily (guild_id, user_id, day, msgs, xp, replies_recv)
+     VALUES (?, ?, ?, 0, 0, 1)
+     ON CONFLICT(guild_id, user_id, day) DO UPDATE SET replies_recv = replies_recv + 1`,
+    [guildId, userId, day],
   );
 }
 
-/** Activity rows within the idle look-back window, for idle-rate computation. */
+export function bumpReactionsRecv(guildId: string, userId: string, nowS: number): void {
+  const day = utcDayString(nowS);
+  const db = getDb();
+  db.run(
+    `UPDATE users SET reactions_recv = reactions_recv + 1 WHERE guild_id = ? AND user_id = ?`,
+    [guildId, userId],
+  );
+  db.run(
+    `INSERT INTO activity_daily (guild_id, user_id, day, msgs, xp, reactions_recv)
+     VALUES (?, ?, ?, 0, 0, 1)
+     ON CONFLICT(guild_id, user_id, day) DO UPDATE SET reactions_recv = reactions_recv + 1`,
+    [guildId, userId, day],
+  );
+}
+
+/** Activity rows within the idle look-back window (XP-based for idle rate). */
 export function recentActivity(
   guildId: string,
   userId: string,
   nowS: number,
-): { day: string; msgs: number }[] {
+): { day: string; xp: number }[] {
   const cutoff = utcDayString(nowS - ECON.IDLE_LOOKBACK_DAYS * 86400);
   return getDb()
     .query(
-      `SELECT day, msgs FROM activity_daily
+      `SELECT day, xp FROM activity_daily
        WHERE guild_id = ? AND user_id = ? AND day >= ? ORDER BY day`,
     )
-    .all(guildId, userId, cutoff) as { day: string; msgs: number }[];
+    .all(guildId, userId, cutoff) as { day: string; xp: number }[];
 }
 
 export function currentIdleRate(guildId: string, userId: string, nowS: number): number {
+  return idleRate(recentActivity(guildId, userId, nowS), nowS).rate;
+}
+
+export function currentIdleInfo(
+  guildId: string,
+  userId: string,
+  nowS: number,
+): { rate: number; weightedXp: number } {
   return idleRate(recentActivity(guildId, userId, nowS), nowS);
 }
 
@@ -194,7 +217,7 @@ export function previewIdle(
   nowS: number,
 ): { rate: number; pending: number } {
   const user = getOrCreateUser(guildId, userId);
-  const rate = currentIdleRate(guildId, userId, nowS);
+  const { rate } = currentIdleInfo(guildId, userId, nowS);
   const { gold } = accrueIdle({
     rate,
     prestige: user.prestige,
@@ -211,13 +234,13 @@ export interface ClaimResult {
 }
 
 /**
- * Lazy idle accrual (design §4). Auto-run before any spend and by /claim.
+ * Lazy idle accrual. Auto-run before any spend and by /claim.
  * Writes the gold delta + new idle_accrued_at.
  */
 export function claimIdle(guildId: string, userId: string, nowS: number): ClaimResult {
   const db = getDb();
   const user = getOrCreateUser(guildId, userId);
-  const rate = currentIdleRate(guildId, userId, nowS);
+  const { rate } = currentIdleInfo(guildId, userId, nowS);
   const { gold, idleAccruedAt } = accrueIdle({
     rate,
     prestige: user.prestige,

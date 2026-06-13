@@ -35,7 +35,7 @@ export async function onReactionAdd(
 
   const guildId = message.guild.id;
   const recipientId = message.author.id;
-  if (recipientId === reactor.id) return; // no self-reactions (§3.2)
+  if (recipientId === reactor.id) return; // no self-reactions
 
   // cap: REACT_CAP_PER_MSG distinct reactors per message, 1 credit per reactor
   const set = reactionCredits.getOrSet(message.id, () => new Set<string>());
@@ -46,7 +46,7 @@ export async function onReactionAdd(
   const grant = tx(() => {
     const recipient = getOrCreateUser(guildId, recipientId);
     const xp = Math.floor(reactionXp(effectiveStats(recipient).cha));
-    bumpReactionsRecv(guildId, recipientId);
+    bumpReactionsRecv(guildId, recipientId, now);
     return grantXp(guildId, recipientId, xp, { nowS: now });
   });
 

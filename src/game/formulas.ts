@@ -3,12 +3,6 @@ import { ECON } from "../config.ts";
 
 // --- §3.1 message XP ---
 
-/** length_bonus = 1 + 3 * min(chars, 400)/400  → 1.0 .. 4.0 */
-export function lengthBonus(chars: number): number {
-  const capped = Math.min(Math.max(chars, 0), ECON.LENGTH_CHAR_CAP);
-  return 1 + ECON.LENGTH_MAX_BONUS * (capped / ECON.LENGTH_CHAR_CAP);
-}
-
 /** stat_mult = 1 + 0.02 * INT */
 export function intMult(intStat: number): number {
   return 1 + ECON.INT_XP_PER_POINT * intStat;
@@ -20,11 +14,10 @@ export function prestigeMult(prestige: number): number {
 }
 
 /**
- * msg_xp = BASE * channel_weight * length_bonus * stat_mult * prestige_mult
+ * msg_xp = BASE * channel_weight * stat_mult * prestige_mult
  * Returned unfloored; caller floors the final integer grant.
  */
 export function messageXp(args: {
-  chars: number;
   channelWeight: number;
   intStat: number;
   prestige: number;
@@ -32,7 +25,6 @@ export function messageXp(args: {
   return (
     ECON.BASE_XP *
     args.channelWeight *
-    lengthBonus(args.chars) *
     intMult(args.intStat) *
     prestigeMult(args.prestige)
   );
@@ -40,12 +32,12 @@ export function messageXp(args: {
 
 // --- §3.2 social XP (credited to recipient) ---
 
-/** reply XP = 10 * (1 + 0.05 * CHA) */
+/** reply XP = 8 * (1 + 0.05 * CHA) */
 export function replyXp(cha: number): number {
   return ECON.REPLY_XP_BASE * (1 + ECON.REPLY_CHA_PER_POINT * cha);
 }
 
-/** reaction XP = 6 * (1 + 0.05 * CHA) */
+/** reaction XP = 12 * (1 + 0.05 * CHA) */
 export function reactionXp(cha: number): number {
   return ECON.REACT_XP_BASE * (1 + ECON.REACT_CHA_PER_POINT * cha);
 }
@@ -57,10 +49,10 @@ export function goldFromXp(xp: number): number {
   return Math.floor(xp * ECON.GOLD_PER_XP);
 }
 
-// --- §3.4 levels: xp_to_next(L) = 80 * L^1.75 ---
+// --- §3.4 levels: xp_to_next(L) = 80 * L^1.5 ---
 
 export function xpToNext(level: number): number {
-  return Math.floor(ECON.LEVEL_COEFF * Math.pow(level, ECON.LEVEL_EXP));
+  return Math.floor(ECON.LEVEL_COEFF * Math.pow(level, ECON.LEVEL_EXPONENT));
 }
 
 /** Total cumulative XP required to *reach* a given level from level 1. */
@@ -120,8 +112,6 @@ export function loserXpPrestigeMult(prestige: number): number {
  *   loser_xp = 0.4 * wager * underdog_mult * prestige_mult
  *   underdog_mult = clamp(power_winner / power_loser, 0.5, 2.0)
  *   prestige_mult = 1 + 0.10 * loser_prestige
- * Losing to a stronger opponent pays more; the per-day budget cap is applied by
- * the caller (it needs DB state). Winners earn no XP.
  */
 export function duelLoserXp(
   wager: number,
@@ -141,9 +131,9 @@ export function loserXpDailyBudget(prestige: number): number {
   return Math.round(ECON.DUEL_LOSER_XP_BUDGET_BASE * loserXpPrestigeMult(prestige));
 }
 
-// --- §C quests (addendum C) ---
+// --- quests ---
 
-/** governing-stat efficiency: eff = 1 + 0.025 * stat, capped at 3.0 (cap at 80). */
+/** governing-stat efficiency: eff = 1 + 0.05 * stat, capped at 3.0 (cap at stat 40). */
 export function questEff(stat: number): number {
   return Math.min(ECON.QUEST_EFF_CAP, 1 + ECON.QUEST_EFF_PER_STAT * Math.max(0, stat));
 }

@@ -1,14 +1,18 @@
-// The one scheduled job in the system (design otherwise computes everything
-// lazily): post each guild's daily leaderboard at 00:00 UTC for the day that
-// just ended, then prune old activity rows.
+// The one scheduled job in the system: post each guild's daily leaderboard at
+// 00:00 UTC for the day that just ended, award crowns, pay out the server quest,
+// and prune old activity rows.
 import type { Client, GuildTextBasedChannel } from "discord.js";
+import { EmbedBuilder } from "discord.js";
 import { getDb } from "./db/db.ts";
 import { ECON } from "./config.ts";
 import { knownGuildIds, getSettings } from "./game/guilds.ts";
-import { previewIdle, recentlyActiveUserIds } from "./game/users.ts";
+import { previewIdle, recentlyActiveUserIds, getOrCreateUser, effectiveStats } from "./game/users.ts";
+import { rollPull } from "./game/inventory.ts";
+import { payServerQuestForGuild } from "./game/quests.ts";
 import {
   leaderboardEmbed,
   idleDigestEmbed,
+  pullEmbed,
   type LeaderEntry,
   type IdleDigestEntry,
 } from "./discord/embeds.ts";
@@ -41,14 +45,128 @@ async function fetchTextChannel(
   return null;
 }
 
+// --- §F crowns ---
+
+interface CrownWinners {
+  mostActive: string[];     // 🗡 Most Active (msg count)
+  mostEsteemed: string[];   // 👑 Most Esteemed (replies + reactions)
+}
+
+function crownWinnersForDay(guildId: string, day: string): CrownWinners {
+  const db = getDb();
+
+  const activeRows = db
+    .query(
+      `SELECT user_id, msgs FROM activity_daily
+       WHERE guild_id = ? AND day = ? AND msgs >= ?
+       ORDER BY msgs DESC`,
+    )
+    .all(guildId, day, ECON.CROWN_ACTIVE_THRESHOLD) as { user_id: string; msgs: number }[];
+
+  let mostActive: string[] = [];
+  if (activeRows.length > 0) {
+    const maxMsgs = activeRows[0]!.msgs;
+    mostActive = activeRows.filter((r) => r.msgs === maxMsgs).map((r) => r.user_id);
+  }
+
+  const esteemRows = db
+    .query(
+      `SELECT user_id,
+              COALESCE(replies_recv, 0) + COALESCE(reactions_recv, 0) AS social
+       FROM activity_daily
+       WHERE guild_id = ? AND day = ?
+         AND (COALESCE(replies_recv, 0) + COALESCE(reactions_recv, 0)) >= ?
+       ORDER BY social DESC`,
+    )
+    .all(guildId, day, ECON.CROWN_ESTEEM_THRESHOLD) as { user_id: string; social: number }[];
+
+  let mostEsteemed: string[] = [];
+  if (esteemRows.length > 0) {
+    const maxSocial = esteemRows[0]!.social;
+    mostEsteemed = esteemRows.filter((r) => r.social === maxSocial).map((r) => r.user_id);
+  }
+
+  return { mostActive, mostEsteemed };
+}
+
 /**
- * Post a guild's leaderboard for `day` to its configured channel. Returns false
- * if no channel is configured, the channel is unusable, or there was no activity.
+ * Award crowns: one free pull each for 🗡 Most Active and 👑 Most Esteemed.
+ * Returns embeds to append to the leaderboard post.
  */
+function awardCrowns(
+  guildId: string,
+  day: string,
+  now: number,
+): EmbedBuilder[] {
+  const { mostActive, mostEsteemed } = crownWinnersForDay(guildId, day);
+  const embeds: EmbedBuilder[] = [];
+
+  const rollForUsers = (
+    emoji: string,
+    title: string,
+    threshold: string,
+    winners: string[],
+    noAward: string,
+  ): void => {
+    if (winners.length === 0) {
+      embeds.push(
+        new EmbedBuilder()
+          .setTitle(`${emoji} ${title}`)
+          .setColor(0xe3b341)
+          .setDescription(`_No one reached the threshold (${threshold}) today._\n${noAward}`),
+      );
+      return;
+    }
+
+    const pullLines: string[] = [];
+    for (const userId of winners) {
+      try {
+        const user = getOrCreateUser(guildId, userId);
+        const luk = effectiveStats(user).luk;
+        const outcome = rollPull(guildId, userId, luk, 0, now);
+        const [line] = pullEmbed([outcome]).data.description?.split("\n") ?? ["?"];
+        pullLines.push(`<@${userId}>: ${line}`);
+      } catch {
+        pullLines.push(`<@${userId}>: _roll failed_`);
+      }
+    }
+    embeds.push(
+      new EmbedBuilder()
+        .setTitle(`${emoji} ${title}`)
+        .setColor(0xe3b341)
+        .setDescription(
+          winners.map((id) => `<@${id}>`).join(", ") +
+            "\n\n" +
+            pullLines.join("\n"),
+        ),
+    );
+  };
+
+  rollForUsers(
+    "🗡",
+    "Most Active",
+    `≥${ECON.CROWN_ACTIVE_THRESHOLD} msgs`,
+    mostActive,
+    "No crown awarded.",
+  );
+  rollForUsers(
+    "👑",
+    "Most Esteemed",
+    `≥${ECON.CROWN_ESTEEM_THRESHOLD} social`,
+    mostEsteemed,
+    "No crown awarded.",
+  );
+
+  return embeds;
+}
+
+// --- leaderboard + crowns + server quest payout ---
+
 export async function postLeaderboardForGuild(
   client: Client,
   guildId: string,
   day: string,
+  now: number,
 ): Promise<boolean> {
   const channelId = getSettings(guildId).leaderboard_channel_id;
   if (!channelId) return false;
@@ -59,9 +177,26 @@ export async function postLeaderboardForGuild(
   const channel = await fetchTextChannel(client, channelId);
   if (!channel) return false;
 
-  const embed = leaderboardEmbed(`📅 Daily Leaderboard — ${day}`, entries, (id) => `<@${id}>`, "XP");
+  const leaderEmbed = leaderboardEmbed(
+    `📅 Daily Leaderboard — ${day}`,
+    entries,
+    (id) => `<@${id}>`,
+    "XP",
+  );
+
+  // Server quest payout (runs inside this same midnight trigger)
+  const { lines: sqLines } = payServerQuestForGuild(guildId, day, now);
+
+  if (sqLines.length > 0) {
+    const existing = leaderEmbed.data.description ?? "";
+    leaderEmbed.setDescription(existing + "\n\n" + sqLines.join("\n"));
+  }
+
+  // Crown award embeds
+  const crownEmbeds = awardCrowns(guildId, day, now);
+
   try {
-    await channel.send({ embeds: [embed] });
+    await channel.send({ embeds: [leaderEmbed, ...crownEmbeds] });
     return true;
   } catch {
     return false;
@@ -119,7 +254,7 @@ async function runDailyJob(client: Client): Promise<void> {
   const day = previousUtcDay(now);
   for (const guildId of knownGuildIds()) {
     try {
-      await postLeaderboardForGuild(client, guildId, day);
+      await postLeaderboardForGuild(client, guildId, day, now);
       await postIdleDigestForGuild(client, guildId, now);
     } catch (err) {
       console.error(`Daily job failed for guild ${guildId}:`, err);

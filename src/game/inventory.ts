@@ -2,7 +2,7 @@
 // rollers, picks a random item_def for the rolled rarity/slot, and writes an
 // owned instance. Also handles equip (one per slot) and salvage.
 import { getDb } from "../db/db.ts";
-import { SLOTS, type Rarity, type Slot } from "../config.ts";
+import { SLOTS, type Rarity, type Slot, type StatKey } from "../config.ts";
 import type { InventoryRow, ItemDefRow, UserRow } from "../types.ts";
 import { rollRarityWithPity, rollStatSpread, salvageValue } from "./gacha.ts";
 import { getOrCreateUser } from "./users.ts";
@@ -24,8 +24,7 @@ function randomDef(rarity: Rarity, slot: Slot): ItemDefRow | null {
 
 /**
  * Roll a single pull for a user, persisting the item and updating pity.
- * `lukBonus` adds LUK-equivalent for expeditions (design §7). Reads the user's
- * current pity_counter and effective LUK.
+ * `lukBonus` adds LUK-equivalent for expeditions (design §7).
  */
 export function rollPull(
   guildId: string,
@@ -46,7 +45,7 @@ export function rollPull(
   const def = randomDef(rarity, slot);
   if (!def) throw new Error(`No item_def for ${rarity}/${slot} — seed missing?`);
 
-  const spread = rollStatSpread(rarity);
+  const spread = rollStatSpread(rarity, def.primary);
   db.run(
     `INSERT INTO inventory (guild_id, user_id, item_def_id, str, int, cha, luk, equipped, obtained_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
@@ -68,12 +67,13 @@ export interface InventoryItem extends InventoryRow {
   name: string;
   slot: Slot;
   rarity: Rarity;
+  primary: StatKey;
 }
 
 export function listInventory(guildId: string, userId: string): InventoryItem[] {
   return getDb()
     .query(
-      `SELECT inv.*, d.name AS name, d.slot AS slot, d.rarity AS rarity
+      `SELECT inv.*, d.name AS name, d.slot AS slot, d.rarity AS rarity, d."primary" AS "primary"
        FROM inventory inv JOIN item_defs d ON d.item_def_id = inv.item_def_id
        WHERE inv.guild_id = ? AND inv.user_id = ?
        ORDER BY inv.equipped DESC, d.rarity DESC, inv.obtained_at DESC`,
@@ -88,7 +88,7 @@ export function getItem(
 ): InventoryItem | null {
   return getDb()
     .query(
-      `SELECT inv.*, d.name AS name, d.slot AS slot, d.rarity AS rarity
+      `SELECT inv.*, d.name AS name, d.slot AS slot, d.rarity AS rarity, d."primary" AS "primary"
        FROM inventory inv JOIN item_defs d ON d.item_def_id = inv.item_def_id
        WHERE inv.guild_id = ? AND inv.user_id = ? AND inv.instance_id = ?`,
     )
@@ -112,7 +112,7 @@ export function equip(guildId: string, userId: string, instanceId: number): Inve
   return item;
 }
 
-/** Salvage an item into gold (design §6). Returns gold gained, or null if not found. */
+/** Salvage an item into gold. Returns gold gained, or null if not found. */
 export function salvage(guildId: string, userId: string, instanceId: number): number | null {
   const db = getDb();
   const item = getItem(guildId, userId, instanceId);
@@ -135,7 +135,7 @@ export function equippedBySlot(
 ): Partial<Record<Slot, InventoryItem>> {
   const rows = getDb()
     .query(
-      `SELECT inv.*, d.name AS name, d.slot AS slot, d.rarity AS rarity
+      `SELECT inv.*, d.name AS name, d.slot AS slot, d.rarity AS rarity, d."primary" AS "primary"
        FROM inventory inv JOIN item_defs d ON d.item_def_id = inv.item_def_id
        WHERE inv.guild_id = ? AND inv.user_id = ? AND inv.equipped = 1`,
     )
@@ -145,7 +145,7 @@ export function equippedBySlot(
   return out;
 }
 
-/** Total stat points across equipped gear — the duel gear_score (design §8). */
+/** Total stat points across equipped gear — the duel gear_score */
 export function gearScoreFor(user: UserRow): number {
   const row = getDb()
     .query(

@@ -19,13 +19,18 @@ import {
   resolveQuestIfDue,
   getTemplate,
   serverQuestStatus,
-  claimServerQuest,
   type QuestOffer,
 } from "../../game/quests.ts";
 import { openParty, userInPendingParty } from "../parties.ts";
 import { pullEmbed } from "../embeds.ts";
 
 const STAT_LABEL: Record<StatKey, string> = { str: "STR", int: "INT", cha: "CHA", luk: "LUK" };
+const STAT_FLAVOR: Record<StatKey, string> = {
+  str: "Plunder",
+  int: "Study",
+  cha: "Fellowship",
+  luk: "Fortune",
+};
 
 function fmtDuration(seconds: number): string {
   const h = Math.floor(seconds / 3600);
@@ -35,10 +40,26 @@ function fmtDuration(seconds: number): string {
 
 function offerLine(guildId: string, userId: string, o: QuestOffer, now: number): string {
   const p = previewOffer(guildId, userId, o, now);
-  const item = p.guaranteedItem ? "guaranteed item" : `${Math.round(p.itemPct * 100)}% item`;
+  const stat = o.template.stat;
+  const flavor = STAT_FLAVOR[stat];
+
+  // Reward summary depends on stat profile
+  let rewardStr: string;
+  if (stat === "luk") {
+    const pct1 = Math.round(p.itemPct * 100);
+    const pct2 = Math.round(p.secondRollPct * 100);
+    rewardStr = `🎁 ${pct1}% item${pct2 > 0 ? ` + ${pct2}% bonus` : ""}`;
+  } else {
+    const parts: string[] = [];
+    if (p.gold > 0) parts.push(`💰 ${p.gold}`);
+    if (p.xp > 0) parts.push(`✨ ${p.xp} XP`);
+    rewardStr = parts.join(" · ") || "—";
+    if (stat === "cha") rewardStr += " _(×0.6 solo)_";
+  }
+
   return (
-    `**${o.index + 1}. ${o.template.name}** — ${STAT_LABEL[o.template.stat]} · ${o.template.kind} · ${o.tier}\n` +
-    `   ⏱ ${fmtDuration(p.durationS)} · 💰 ${p.gold} · ✨ ${p.xp} XP · 🎁 ${item} _(eff ×${p.eff.toFixed(2)})_`
+    `**${o.index + 1}. ${o.template.name}** — ${STAT_LABEL[stat]} · ${flavor} · ${o.template.kind} · ${o.tier}\n` +
+    `   ⏱ ${fmtDuration(p.durationS)} · ${rewardStr} _(eff ×${p.eff.toFixed(2)})_`
   );
 }
 
@@ -62,8 +83,7 @@ export const quest: Command = {
         .addIntegerOption((o) =>
           o.setName("offer").setDescription("Which offer (1-3)").setRequired(true).setMinValue(1).setMaxValue(3),
         ),
-    )
-    .addSubcommand((s) => s.setName("claim").setDescription("Claim today's server quest reward")),
+    ),
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.inGuild()) {
@@ -79,28 +99,23 @@ export const quest: Command = {
     const resolved = tx(() => resolveQuestIfDue(guildId, userId, now));
     if (resolved) {
       const mine = resolved.rewards.find((r) => r.userId === userId);
+      const stat = resolved.template.stat;
+      const rewardDesc =
+        stat === "luk"
+          ? mine && mine.items.length
+            ? `${mine.items.length} item(s) found`
+            : "Nothing found this time."
+          : `**+${mine?.gold ?? 0}** gold · **+${mine?.xp ?? 0}** XP`;
       const embed = new EmbedBuilder()
         .setTitle(`✅ ${resolved.template.name} complete!`)
         .setColor(0x3fb950)
         .setDescription(
           (resolved.memberCount > 1 ? `Party of ${resolved.memberCount} — your share:\n` : "") +
-            `**+${mine?.gold ?? 0}** gold · **+${mine?.xp ?? 0}** XP` +
-            (mine && mine.items.length ? ` · ${mine.items.length} item(s)` : ""),
+            rewardDesc,
         );
       const embeds = [embed];
       if (mine && mine.items.length) embeds.push(pullEmbed(mine.items));
       await interaction.reply({ embeds });
-      return;
-    }
-
-    if (sub === "claim") {
-      const res = tx(() => claimServerQuest(guildId, userId, now));
-      await interaction.reply({
-        content: res.ok
-          ? `🏰 Server quest claimed — **+${res.gold}** gold, **+${res.xp}** XP _(${STAT_LABEL[res.stat]} eff ×${res.eff.toFixed(2)})_.`
-          : `❌ ${res.reason}`,
-        flags: MessageFlags.Ephemeral,
-      });
       return;
     }
 
@@ -164,6 +179,13 @@ export const quest: Command = {
     const sq = serverQuestStatus(guildId, userId, now);
     const sqTpl = sq.template;
 
+    const completionPct = Math.round(sq.completion * 100);
+    const sqStatusLine = sq.isContributor
+      ? `You: ${sq.myMsgs} msgs ✅ contributor`
+      : sq.myMsgs > 0
+        ? `You: ${sq.myMsgs} msg(s) — need ${3 - sq.myMsgs} more to contribute`
+        : `You: no counted messages today — bystander payout if active in last 14d`;
+
     const embed = new EmbedBuilder()
       .setTitle("🗺️ Quest Board")
       .setColor(0x5865f2)
@@ -178,10 +200,10 @@ export const quest: Command = {
         {
           name: `🏰 Server quest — ${STAT_LABEL[sqTpl.stat]}`,
           value:
-            `Goal: reach **${sq.quest.goal}** counted messages today — **${sq.quest.progress}/${sq.quest.goal}**` +
-            (sq.met ? " ✅" : "") +
-            `\nYou: ${sq.myMsgs} msg(s)` +
-            (sq.canClaim ? " — `/quest claim` to collect!" : sq.claimed ? " — claimed ✓" : ""),
+            `${sq.quest.progress}/${sq.quest.goal} messages · completion **${completionPct}%**` +
+            (sq.completion >= 0.5 ? " ✅" : " _(need ≥50%)_") +
+            `\n${sqStatusLine}` +
+            `\n_Payout is automatic at midnight UTC._`,
         },
       )
       .setFooter({ text: "Offers reroll at 00:00 UTC." });

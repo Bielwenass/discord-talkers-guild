@@ -1,6 +1,5 @@
 import { test, expect, describe } from "bun:test";
 import {
-  lengthBonus,
   intMult,
   prestigeMult,
   messageXp,
@@ -25,14 +24,7 @@ import { idleRate, accrueIdle } from "../src/game/idle.ts";
 import { ECON } from "../src/config.ts";
 import { utcDayString } from "../src/util/time.ts";
 
-describe("message XP (§3.1)", () => {
-  test("length bonus is 1.0..4.0 and caps at 400 chars", () => {
-    expect(lengthBonus(0)).toBe(1);
-    expect(lengthBonus(200)).toBeCloseTo(2.5, 5); // 1 + 3*0.5
-    expect(lengthBonus(400)).toBeCloseTo(4, 5); // 1 + 3*1
-    expect(lengthBonus(4000)).toBeCloseTo(4, 5); // capped at 400 chars
-  });
-
+describe("message XP (§3.1 / v1.2.1)", () => {
   test("stat and prestige multipliers", () => {
     expect(intMult(0)).toBe(1);
     expect(intMult(50)).toBeCloseTo(2, 5); // 1 + 0.02*50
@@ -40,21 +32,20 @@ describe("message XP (§3.1)", () => {
     expect(prestigeMult(3)).toBeCloseTo(1.6, 5); // 1 + 0.20*3
   });
 
-  test("messageXp composes all factors", () => {
-    // BASE 4 * weight 1.5 * lengthBonus(400)=4 * intMult(0)=1 * prestige(0)=1 = 24
-    expect(messageXp({ chars: 400, channelWeight: 1.5, intStat: 0, prestige: 0 })).toBeCloseTo(
-      24,
-      5,
-    );
+  test("messageXp: BASE_XP=3 * channelWeight * intMult * prestigeMult (no length term)", () => {
+    // BASE 3 * weight 1.5 * intMult(0)=1 * prestige(0)=1 = 4.5
+    expect(messageXp({ channelWeight: 1.5, intStat: 0, prestige: 0 })).toBeCloseTo(4.5, 5);
+    // INT 50 doubles the stat mult: 3 * 1.0 * 2.0 * 1.0 = 6
+    expect(messageXp({ channelWeight: 1.0, intStat: 50, prestige: 0 })).toBeCloseTo(6, 5);
   });
 });
 
-describe("social XP (§3.2)", () => {
-  test("reply/reaction scale with CHA", () => {
-    expect(replyXp(0)).toBe(10);
-    expect(replyXp(50)).toBeCloseTo(35, 5); // 10 * (1 + 0.05*50)
-    expect(reactionXp(0)).toBe(6);
-    expect(reactionXp(25)).toBeCloseTo(13.5, 5); // 6 * (1 + 0.05*25)
+describe("social XP (§3.2 / v1.2.1)", () => {
+  test("reply XP base is 8, reaction XP base is 12", () => {
+    expect(replyXp(0)).toBe(8);
+    expect(replyXp(50)).toBeCloseTo(28, 5); // 8 * (1 + 0.05*50)
+    expect(reactionXp(0)).toBe(12);
+    expect(reactionXp(25)).toBeCloseTo(27, 5); // 12 * (1 + 0.05*25)
   });
 });
 
@@ -67,7 +58,7 @@ describe("gold (§3.3)", () => {
 });
 
 describe("levels (§3.4)", () => {
-  test("xpToNext follows 80*L^1.75 and is monotonic", () => {
+  test("xpToNext follows 80*L^1.5 and is monotonic", () => {
     expect(xpToNext(1)).toBe(80);
     let prev = 0;
     for (let l = 1; l < 60; l++) {
@@ -80,9 +71,7 @@ describe("levels (§3.4)", () => {
   test("levelFromTotalXp is the exact inverse of cumulativeXpForLevel", () => {
     for (const L of [1, 2, 5, 10, 25, 50]) {
       const floor = cumulativeXpForLevel(L);
-      // exactly at the threshold → level L
       expect(levelFromTotalXp(floor)).toBe(L);
-      // one XP short → still level L-1 (for L>1)
       if (L > 1) expect(levelFromTotalXp(floor - 1)).toBe(L - 1);
     }
   });
@@ -95,54 +84,60 @@ describe("levels (§3.4)", () => {
 describe("stat cost (§5)", () => {
   test("geometric 500 * 1.15^n", () => {
     expect(statPointCost(0)).toBe(500);
-    expect(statPointCost(1)).toBe(575); // floor(500*1.15)
+    expect(statPointCost(1)).toBe(575);
     expect(statPointCost(10)).toBe(Math.floor(500 * Math.pow(1.15, 10)));
   });
 });
 
-describe("idle layer (§4)", () => {
+describe("idle layer (§4 / v1.2.1 — XP-based, sublinear)", () => {
   const now = Date.parse("2026-06-11T12:00:00Z") / 1000;
   const day = (ageDays: number) => utcDayString(now - ageDays * 86400);
 
-  test("today's 50 msgs → RATE_PER_MSG * 50 gold/h", () => {
-    const r = idleRate([{ day: day(0), msgs: 50 }], now);
-    expect(r).toBeCloseTo(ECON.RATE_PER_MSG * 50, 5);
+  // Reference values from spec §D (±5% tolerance):
+  // 100 XP/day sustained → steady ~27 g/h; 350 XP/day → ~72 g/h; 500 XP/day → ~96 g/h
+  // Single-day acceptance:
+  //   100 XP day-0 → ~10 g/h; 350 XP day-0 → ~27 g/h; 500 XP day-0 → ~35 g/h
+
+  test("today 100 XP → ~10 g/h (spec ±5%)", () => {
+    const { rate } = idleRate([{ day: day(0), xp: 100 }], now);
+    expect(rate).toBeGreaterThan(9.5);
+    expect(rate).toBeLessThan(10.5);
   });
 
-  test("one half-life (3.5d) halves the contribution", () => {
-    const r = idleRate([{ day: day(3.5 * 0 + 3.5), msgs: 100 }], now);
-    // 3.5 days is not an integer offset here; use a clean check at 7 days = 2 half-lives
-    const r7 = idleRate([{ day: day(7), msgs: 100 }], now);
-    expect(r7).toBeCloseTo(ECON.RATE_PER_MSG * 100 * 0.25, 1);
-    expect(r).toBeGreaterThan(0);
+  test("today 500 XP → ~35 g/h (spec ±5%)", () => {
+    const { rate } = idleRate([{ day: day(0), xp: 500 }], now);
+    expect(rate).toBeGreaterThan(33.25);
+    expect(rate).toBeLessThan(36.75);
   });
 
-  test("contribution at 14 days is ~6.25% (negligible)", () => {
-    const r = idleRate([{ day: day(14), msgs: 100 }], now);
-    expect(r).toBeCloseTo(ECON.RATE_PER_MSG * 100 * 0.0625, 1);
+  test("half-life 2d: 100 XP 2 days ago → ~50% weight", () => {
+    const { weightedXp } = idleRate([{ day: day(2), xp: 100 }], now);
+    expect(weightedXp).toBeCloseTo(50, 0);
   });
 
-  test("50 msgs/day for 14 days converges to ~500 gold/h", () => {
-    const rows = Array.from({ length: 15 }, (_, k) => ({ day: day(k), msgs: 50 }));
-    const r = idleRate(rows, now);
-    expect(r).toBeGreaterThan(450);
-    expect(r).toBeLessThan(560);
+  test("weightedXp is returned for /profile display", () => {
+    const { rate, weightedXp } = idleRate([{ day: day(0), xp: 200 }], now);
+    expect(weightedXp).toBe(200); // age 0 → no decay
+    expect(rate).toBeGreaterThan(0);
+  });
+
+  test("sustained 350 XP/day (~3.4× daily decayed) → ~72 g/h (spec ±5%)", () => {
+    // Geometric series steady state ≈ 3.4× daily XP
+    const rows = Array.from({ length: 10 }, (_, k) => ({ day: day(k), xp: 350 }));
+    const { rate } = idleRate(rows, now);
+    expect(rate).toBeGreaterThan(68.4);
+    expect(rate).toBeLessThan(75.6);
   });
 
   test("accrual caps at 24h", () => {
-    const r = accrueIdle({
-      rate: 100,
-      prestige: 0,
-      idleAccruedAt: now - 48 * 3600,
-      nowS: now,
-    });
-    expect(r.gold).toBe(100 * 24); // capped at 24h
+    const r = accrueIdle({ rate: 100, prestige: 0, idleAccruedAt: now - 48 * 3600, nowS: now });
+    expect(r.gold).toBe(100 * 24);
     expect(r.idleAccruedAt).toBe(now);
   });
 
   test("prestige multiplies idle income", () => {
     const r = accrueIdle({ rate: 100, prestige: 2, idleAccruedAt: now - 3600, nowS: now });
-    expect(r.gold).toBe(Math.floor(100 * 1 * 1.4)); // 1h * 1.4 prestige (1 + 0.20*2)
+    expect(r.gold).toBe(Math.floor(100 * 1 * 1.4));
   });
 
   test("first check-in grants nothing, just starts the clock", () => {
@@ -160,38 +155,38 @@ describe("duels (§8)", () => {
   test("win probability is power share", () => {
     expect(duelWinProbability(28, 28)).toBeCloseTo(0.5, 5);
     expect(duelWinProbability(30, 10)).toBeCloseTo(0.75, 5);
-    expect(duelWinProbability(0, 0)).toBe(0.5); // degenerate guard
+    expect(duelWinProbability(0, 0)).toBe(0.5);
   });
 
-  test("loser XP = 0.4 * wager * underdog * prestige (addendum A reference values)", () => {
-    expect(duelLoserXp(50, 1, 1, 0)).toBe(20); // even match, min wager
-    expect(duelLoserXp(500, 1, 1, 0)).toBe(200); // even match
-    expect(duelLoserXp(1000, 2, 1, 0)).toBe(800); // lost to a 2x stronger opponent
+  test("loser XP = 0.4 * wager * underdog * prestige", () => {
+    expect(duelLoserXp(50, 1, 1, 0)).toBe(20);
+    expect(duelLoserXp(500, 1, 1, 0)).toBe(200);
+    expect(duelLoserXp(1000, 2, 1, 0)).toBe(800);
   });
 
   test("underdog multiplier clamps to [0.5, 2.0]", () => {
-    expect(duelLoserXp(100, 10, 1, 0)).toBe(80); // ratio 10 -> clamped to 2.0
-    expect(duelLoserXp(100, 1, 10, 0)).toBe(20); // ratio 0.1 -> clamped to 0.5
+    expect(duelLoserXp(100, 10, 1, 0)).toBe(80);
+    expect(duelLoserXp(100, 1, 10, 0)).toBe(20);
   });
 
   test("loser-XP prestige bonus and daily budget", () => {
-    expect(duelLoserXp(50, 1, 1, 5)).toBe(30); // 0.4*50 * (1 + 0.10*5) = 30
+    expect(duelLoserXp(50, 1, 1, 5)).toBe(30);
     expect(loserXpDailyBudget(0)).toBe(1000);
     expect(loserXpDailyBudget(5)).toBe(1500);
   });
 });
 
-describe("quests (addendum C)", () => {
-  test("eff = 1 + 0.025*stat, capped at 3.0 (cap at 80)", () => {
+describe("quests (addendum C / v1.2.1)", () => {
+  test("eff = 1 + 0.05*stat, cap 3.0 at stat 40", () => {
     expect(questEff(0)).toBeCloseTo(1, 9);
-    expect(questEff(20)).toBeCloseTo(1.5, 9);
-    expect(questEff(80)).toBeCloseTo(3, 9);
-    expect(questEff(1000)).toBeCloseTo(3, 9); // cap holds
+    expect(questEff(20)).toBeCloseTo(2, 9);  // 1 + 0.05*20
+    expect(questEff(40)).toBeCloseTo(3, 9);  // cap
+    expect(questEff(1000)).toBeCloseTo(3, 9);
   });
 
   test("per-hour rates scale with level", () => {
     expect(questGoldRate(20)).toBeCloseTo(20, 9); // 8 + 0.6*20
-    expect(questXpRate(20)).toBeCloseTo(13, 9); // 5 + 0.4*20
+    expect(questXpRate(20)).toBeCloseTo(13, 9);  // 5 + 0.4*20
   });
 });
 
@@ -202,11 +197,11 @@ describe("raids (addendum B)", () => {
     expect(raidStrDamageMult(40)).toBeCloseTo(3, 9);
   });
 
-  test("strike pct = 1.2% + 0.10%*STR, capped at 8% (cap at STR 68)", () => {
+  test("strike pct = 1.2% + 0.10%*STR, capped at 8%", () => {
     expect(raidStrikePct(0)).toBeCloseTo(0.012, 9);
     expect(raidStrikePct(5)).toBeCloseTo(0.017, 9);
     expect(raidStrikePct(20)).toBeCloseTo(0.032, 9);
     expect(raidStrikePct(68)).toBeCloseTo(0.08, 9);
-    expect(raidStrikePct(1000)).toBeCloseTo(0.08, 9); // cap holds
+    expect(raidStrikePct(1000)).toBeCloseTo(0.08, 9);
   });
 });

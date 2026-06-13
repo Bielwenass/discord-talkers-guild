@@ -43,7 +43,7 @@ export function pullReply(res: PullResponse): InteractionReplyOptions {
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId("pull:again").setLabel("Pull Again (250)").setStyle(ButtonStyle.Primary).setEmoji("🎲"),
     new ButtonBuilder().setCustomId("pull:ten").setLabel("Ten-Pull (2250)").setStyle(ButtonStyle.Secondary).setEmoji("🎰"),
-    new ButtonBuilder().setCustomId("pull:salvagecommons").setLabel("Salvage Commons").setStyle(ButtonStyle.Danger).setEmoji("♻️"),
+    new ButtonBuilder().setCustomId("pull:salvagecommons").setLabel("Salvage Uncommons-").setStyle(ButtonStyle.Danger).setEmoji("♻️"),
   );
   return {
     embeds: [pullEmbed(res.outcomes!)],

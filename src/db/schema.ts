@@ -27,7 +27,6 @@ export function initSchema(db: Database): void {
       stat_points     INTEGER NOT NULL DEFAULT 0,
       bought_points   INTEGER NOT NULL DEFAULT 0,
       msg_count       INTEGER NOT NULL DEFAULT 0,
-      char_count      INTEGER NOT NULL DEFAULT 0,
       replies_recv    INTEGER NOT NULL DEFAULT 0,
       reactions_recv  INTEGER NOT NULL DEFAULT 0,
       last_xp_at      INTEGER NOT NULL DEFAULT 0,
@@ -42,11 +41,13 @@ export function initSchema(db: Database): void {
 
   db.run(`
     CREATE TABLE IF NOT EXISTS activity_daily (
-      guild_id  TEXT NOT NULL,
-      user_id   TEXT NOT NULL,
-      day       TEXT NOT NULL,                 -- 'YYYY-MM-DD' UTC
-      msgs      INTEGER NOT NULL DEFAULT 0,     -- counted (non-cooldown) msgs only
-      xp        INTEGER NOT NULL DEFAULT 0,
+      guild_id      TEXT NOT NULL,
+      user_id       TEXT NOT NULL,
+      day           TEXT NOT NULL,                  -- 'YYYY-MM-DD' UTC
+      msgs          INTEGER NOT NULL DEFAULT 0,      -- counted (bucket-admitted) msgs only
+      xp            INTEGER NOT NULL DEFAULT 0,
+      replies_recv  INTEGER NOT NULL DEFAULT 0,
+      reactions_recv INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (guild_id, user_id, day)
     );
   `);
@@ -56,7 +57,8 @@ export function initSchema(db: Database): void {
       item_def_id INTEGER PRIMARY KEY,
       name        TEXT NOT NULL,
       slot        TEXT NOT NULL CHECK (slot IN ('weapon','armor','trinket')),
-      rarity      TEXT NOT NULL CHECK (rarity IN ('common','uncommon','rare','epic','legendary'))
+      rarity      TEXT NOT NULL CHECK (rarity IN ('common','uncommon','rare','epic','legendary')),
+      "primary"   TEXT NOT NULL DEFAULT 'str' CHECK ("primary" IN ('str','int','cha','luk'))
     );
   `);
   db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_item_defs_name ON item_defs(name);`);
@@ -149,7 +151,7 @@ export function initSchema(db: Database): void {
       day      TEXT NOT NULL,
       user_id  TEXT NOT NULL,
       msgs     INTEGER NOT NULL DEFAULT 0,   -- counted msgs toward that day's quest
-      claimed  INTEGER NOT NULL DEFAULT 0,
+      claimed  INTEGER NOT NULL DEFAULT 0,   -- 1 after auto-payout at midnight
       PRIMARY KEY (guild_id, day, user_id)
     );
   `);
@@ -159,17 +161,23 @@ export function initSchema(db: Database): void {
 
 /**
  * Additive column migrations for databases created before a schema change.
- * `CREATE TABLE IF NOT EXISTS` never alters an existing table, so new columns on
- * pre-existing tables are added here. Idempotent: checks table_info first.
+ * Idempotent: checks table_info first.
  */
 function migrateColumns(db: Database): void {
+  // column is the bare name (for table_info lookup); it's double-quoted in the ALTER statement.
   const add = (table: string, column: string, decl: string): void => {
     const cols = db.query(`PRAGMA table_info(${table})`).all() as { name: string }[];
     if (!cols.some((c) => c.name === column)) {
-      db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+      db.run(`ALTER TABLE ${table} ADD COLUMN "${column}" ${decl}`);
     }
   };
+  // users table migrations
   add("users", "loser_xp_today", "INTEGER NOT NULL DEFAULT 0");
   add("users", "last_duel_day", "TEXT NOT NULL DEFAULT ''");
+  // activity_daily migrations (v1.2.1)
+  add("activity_daily", "replies_recv", "INTEGER NOT NULL DEFAULT 0");
+  add("activity_daily", "reactions_recv", "INTEGER NOT NULL DEFAULT 0");
+  // item_defs migrations (v1.2.1)
   add("raid_damage", "last_strike_at", "INTEGER NOT NULL DEFAULT 0");
+  add("item_defs", "primary", `TEXT NOT NULL DEFAULT 'str'`);
 }

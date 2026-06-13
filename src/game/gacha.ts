@@ -1,6 +1,5 @@
-// Gacha & gear rolling (design §6). The weight/pity/spread logic is pure and
-// unit-tested; persistence (reading item_defs, writing inventory, pity counter)
-// lives in the gacha command/handler which calls these helpers.
+// Gacha & gear rolling. Pure functions — persistence lives
+// in the command handlers / inventory module.
 import {
   ECON,
   RARITY_TABLE,
@@ -54,9 +53,8 @@ export function sampleRarity(
 }
 
 /**
- * Roll one rarity honoring pity (design §6): pity counter is the number of
- * pulls since the last Epic+. If this pull would be the PITY_THRESHOLD-th
- * without an Epic+, force an Epic+. Returns the rarity and the next pity value.
+ * Roll one rarity honoring pity: if this pull would be the
+ * PITY_THRESHOLD-th without an Epic+, force an Epic+.
  */
 export function rollRarityWithPity(args: {
   luk: number;
@@ -79,20 +77,34 @@ export function rollRarityWithPity(args: {
 }
 
 /**
- * Roll a stat spread for an item: pick a total budget within the rarity's range
- * and distribute points randomly across the four stats.
+ * Roll a stat spread with a fixed primary stat:
+ * - primary_share ~ uniform [0.60, 0.85]; primary gets ceil(budget × share)
+ * - remainder goes to at most 1 secondary stat chosen from the other three
+ * - zero-point stats are omitted (caller should not render them)
  */
 export function rollStatSpread(
   rarity: Rarity,
+  primary: StatKey,
   rng: () => number = Math.random,
 ): Record<StatKey, number> {
   const { budgetMin, budgetMax } = RARITY_TABLE[rarity];
   const budget = budgetMin + Math.floor(rng() * (budgetMax - budgetMin + 1));
+
+  const shareMin = ECON.ITEM_PRIMARY_SHARE_MIN;
+  const shareMax = ECON.ITEM_PRIMARY_SHARE_MAX;
+  const primaryShare = shareMin + rng() * (shareMax - shareMin);
+  const primaryPoints = Math.ceil(budget * primaryShare);
+  const remainder = budget - primaryPoints;
+
   const spread: Record<StatKey, number> = { str: 0, int: 0, cha: 0, luk: 0 };
-  for (let i = 0; i < budget; i++) {
-    const k = STAT_KEYS[Math.floor(rng() * STAT_KEYS.length)] as StatKey;
-    spread[k]++;
+  spread[primary] = primaryPoints;
+
+  if (remainder > 0) {
+    const others = STAT_KEYS.filter((k) => k !== primary);
+    const secondary = others[Math.floor(rng() * others.length)] as StatKey;
+    spread[secondary] = remainder;
   }
+
   return spread;
 }
 
@@ -100,7 +112,6 @@ export function gearScore(spread: { str: number; int: number; cha: number; luk: 
   return spread.str + spread.int + spread.cha + spread.luk;
 }
 
-/** Pull price (design §6): single 250, ten-pull 2250 (10% discount). */
 export function pullCost(tenPull: boolean): number {
   return tenPull ? ECON.PULL_COST_TEN : ECON.PULL_COST_SINGLE;
 }

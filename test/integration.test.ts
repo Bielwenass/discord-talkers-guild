@@ -219,25 +219,45 @@ describe("duel loser-XP budget (addendum A)", () => {
 });
 
 describe("quests (addendum C)", () => {
-  test("solo quest: start snapshots eff, resolves with gold + XP after ends_at", () => {
+  test("solo quest: start snapshots eff, resolves with stat-appropriate reward after ends_at", () => {
     users.grantXp(G, "qsolo", 2000, { nowS: now, countedMsg: true }); // give some level
     const offers = quests.dailyOffers(G, "qsolo", "2026-06-11");
     expect(offers.length).toBe(3);
-    expect(new Set(offers.map((o) => o.template.stat)).size).toBeGreaterThanOrEqual(2); // C.2 constraint
+    // v1.2.1: exactly 3 distinct governing stats
+    expect(new Set(offers.map((o) => o.template.stat)).size).toBe(3);
 
     const start = quests.startSoloQuest(G, "qsolo", 0, now);
     expect(start.ok).toBe(true);
     expect(quests.activeQuestFor(G, "qsolo")).not.toBeNull();
-    // not due yet
-    expect(quests.resolveQuestIfDue(G, "qsolo", now)).toBeNull();
+    expect(quests.resolveQuestIfDue(G, "qsolo", now)).toBeNull(); // not due yet
 
+    const offer0 = offers[0]!;
+    const stat = offer0.template.stat;
     const goldBefore = users.getOrCreateUser(G, "qsolo").gold;
-    // force resolution far in the future; rng=0 so any item roll fires deterministically
+    const xpBefore = users.getOrCreateUser(G, "qsolo").xp;
     const res = quests.resolveQuestIfDue(G, "qsolo", now + 30 * 3600, () => 0);
     expect(res).not.toBeNull();
-    expect(res!.rewards[0]!.gold).toBeGreaterThan(0);
-    expect(res!.rewards[0]!.xp).toBeGreaterThan(0);
-    expect(users.getOrCreateUser(G, "qsolo").gold).toBeGreaterThan(goldBefore);
+    const reward = res!.rewards[0]!;
+
+    // Each stat pays exactly one reward type
+    if (stat === "str") {
+      expect(reward.gold).toBeGreaterThan(0);
+      expect(reward.xp).toBe(0);
+    } else if (stat === "int") {
+      expect(reward.xp).toBeGreaterThan(0);
+      expect(reward.gold).toBe(0);
+    } else if (stat === "luk") {
+      // LUK: rng=0 means first roll fires (chance threshold met)
+      expect(reward.items.length).toBeGreaterThan(0);
+    } else {
+      // CHA: both gold and xp, reduced by soloMult
+      expect(reward.gold).toBeGreaterThan(0);
+      expect(reward.xp).toBeGreaterThan(0);
+    }
+    // Balance changed (gold for str/cha, xp for int/cha)
+    const userAfter = users.getOrCreateUser(G, "qsolo");
+    if (stat !== "int" && stat !== "luk") expect(userAfter.gold).toBeGreaterThan(goldBefore);
+    if (stat !== "str" && stat !== "luk") expect(userAfter.xp).toBeGreaterThan(xpBefore);
     expect(quests.activeQuestFor(G, "qsolo")).toBeNull(); // slot freed
   });
 
@@ -249,22 +269,22 @@ describe("quests (addendum C)", () => {
     );
   });
 
-  test("server quest: progress, threshold, contributor gate, one claim", () => {
+  test("server quest: progress tracking and auto-payout (v1.2.1)", () => {
     const sq = quests.ensureServerQuest(G, now);
-    expect(sq.goal).toBeGreaterThanOrEqual(50); // min goal
-    // qcontrib sends 3 counted messages
+    expect(sq.goal).toBeGreaterThanOrEqual(30); // min goal (was 50, now 30)
+    // qcontrib sends 3 counted messages (contributor threshold)
     for (let i = 0; i < 3; i++) quests.recordServerQuestProgress(G, "qcontrib", now);
-    // force the goal to met for the test
+    // force goal met with ≥50% completion
     db.getDb().run(`UPDATE server_quest SET progress = goal WHERE guild_id=? AND day=?`, [G, sq.day]);
 
-    const ok = quests.claimServerQuest(G, "qcontrib", now);
-    expect(ok.ok).toBe(true);
-    // second claim is rejected
-    const again = quests.claimServerQuest(G, "qcontrib", now);
-    expect(again.ok).toBe(false);
-    // a non-contributor (0 msgs) cannot claim
-    const none = quests.claimServerQuest(G, "qlurker", now);
-    expect(none.ok).toBe(false);
+    // payServerQuestForGuild should pay contributors and bystanders
+    const { lines } = quests.payServerQuestForGuild(G, sq.day, now);
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines[0]).toContain("contributor");
+
+    // second call should not pay again (claimed flag set)
+    const { lines: lines2 } = quests.payServerQuestForGuild(G, sq.day, now);
+    expect(lines2[0]).toContain("0 contributor"); // already claimed
   });
 });
 

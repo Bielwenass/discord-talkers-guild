@@ -1,9 +1,9 @@
 // Shared embed/format builders for the Discord UI.
 import { EmbedBuilder } from "discord.js";
-import type { Rarity } from "../config.ts";
+import type { Rarity, StatKey } from "../config.ts";
 import type { UserRow } from "../types.ts";
 import { cumulativeXpForLevel, xpToNext } from "../game/formulas.ts";
-import { effectiveStats, currentIdleRate } from "../game/users.ts";
+import { currentIdleInfo, effectiveStats } from "../game/users.ts";
 import { equippedBySlot, type PullOutcome } from "../game/inventory.ts";
 import { prestigeRequirement } from "../game/prestige.ts";
 
@@ -28,12 +28,17 @@ function progressBar(fraction: number, width = 16): string {
   return "█".repeat(filled) + "░".repeat(width - filled);
 }
 
-function statSpread(s: { str: number; int: number; cha: number; luk: number }): string {
-  const parts: string[] = [];
-  if (s.str) parts.push(`STR+${s.str}`);
-  if (s.int) parts.push(`INT+${s.int}`);
-  if (s.cha) parts.push(`CHA+${s.cha}`);
-  if (s.luk) parts.push(`LUK+${s.luk}`);
+/** Render stat spread, leading with primary stat. Zero-point stats omitted. */
+export function statSpread(
+  s: { str: number; int: number; cha: number; luk: number },
+  primary?: StatKey,
+): string {
+  const order: StatKey[] = primary
+    ? [primary, ...["str", "int", "cha", "luk"].filter((k) => k !== primary) as StatKey[]]
+    : ["str", "int", "cha", "luk"];
+  const parts = order
+    .filter((k) => s[k] > 0)
+    .map((k) => `${k.toUpperCase()}+${s[k]}`);
   return parts.length ? parts.join(" ") : "—";
 }
 
@@ -42,7 +47,7 @@ export function profileEmbed(user: UserRow, displayName: string, nowS: number): 
   const levelFloor = cumulativeXpForLevel(user.level);
   const intoLevel = user.xp - levelFloor;
   const need = xpToNext(user.level);
-  const rate = currentIdleRate(user.guild_id, user.user_id, nowS);
+  const { rate, weightedXp } = currentIdleInfo(user.guild_id, user.user_id, nowS);
   const gear = equippedBySlot(user.guild_id, user.user_id);
 
   const gearLines = (["weapon", "armor", "trinket"] as const)
@@ -50,7 +55,7 @@ export function profileEmbed(user: UserRow, displayName: string, nowS: number): 
       const it = gear[slot];
       const label = slot[0]!.toUpperCase() + slot.slice(1);
       return it
-        ? `${RARITY_EMOJI[it.rarity]} **${label}:** ${it.name} _(${statSpread(it)})_`
+        ? `${RARITY_EMOJI[it.rarity]} **${label}:** ${it.name} _(${statSpread(it, it.primary)})_`
         : `▫️ **${label}:** _empty_`;
     })
     .join("\n");
@@ -82,7 +87,7 @@ export function profileEmbed(user: UserRow, displayName: string, nowS: number): 
         name: "Economy",
         value: [
           `💰 **${user.gold}** gold`,
-          `⏳ idle **${rate.toFixed(1)}**/h`,
+          `⏳ idle **${rate.toFixed(1)}**/h _(${weightedXp.toLocaleString()} wXP)_`,
           `✦ prestige **${user.prestige}** (next @ L${prestigeRequirement(user.prestige)})`,
         ].join("\n"),
         inline: true,
@@ -101,7 +106,7 @@ export function pullEmbed(outcomes: PullOutcome[]): EmbedBuilder {
   }, "common");
   const lines = outcomes.map(
     (o) =>
-      `${RARITY_EMOJI[o.rarity]} **${o.def.name}** _(${o.def.slot}, ${o.rarity})_ — ${statSpread(o.spread)}`,
+      `${RARITY_EMOJI[o.rarity]} **${o.def.name}** _(${o.def.slot})_ · ${statSpread(o.spread, o.def.primary)}`,
   );
   return new EmbedBuilder()
     .setTitle(outcomes.length > 1 ? "Ten-Pull Results" : "Pull Result")

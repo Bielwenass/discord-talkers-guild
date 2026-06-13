@@ -49,11 +49,11 @@ are always current when it matters.
 ## Levels
 
 ```
-xp_to_next(L) = 80 * L^1.75
+xp_to_next(L) = 80 * L^1.5
 ```
 
 Crossing a level grants `STAT_POINTS_PER_LEVEL` (1) stat point. Every
-`FREE_PULL_EVERY_LEVELS` (5) levels grants a free gacha pull. Milestones at L5, L10,
+`FREE_PULL_EVERY_LEVELS` (2) levels grants a free gacha pull. Milestones at L5, L10,
 L25, and L50 grant configured reward roles. (The level-to-XP mapping follows the
 formula above; the design's prose checkpoints are approximate.)
 

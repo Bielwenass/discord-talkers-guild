@@ -1,34 +1,37 @@
-// Idle layer (design §4). Pure functions: rate from activity rows + lazy accrual.
+// Idle layer. XP-based, sublinear decay.
 import { ECON } from "../config.ts";
 import { prestigeMult } from "./formulas.ts";
 import { utcDayString } from "../util/time.ts";
 
 /**
- * idle_rate(now) = RATE_PER_MSG * Σ_days msgs(day) * 0.5^(age_days / 3.5)
- * age_days measured in whole UTC days; today's messages have age 0.
- * Returns gold/hour.
+ * idle_rate = decayed_xp ^ IDLE_EXPONENT / IDLE_DIVISOR
+ * decayed_xp = Σ_days xp(day) × 0.5^(age_days / IDLE_HALF_LIFE_DAYS)
+ * Returns rate in gold/hour plus the weighted XP input (for /profile display).
  */
 export function idleRate(
-  rows: { day: string; msgs: number }[],
+  rows: { day: string; xp: number }[],
   nowS: number,
-): number {
+): { rate: number; weightedXp: number } {
   const todayMs = Date.parse(utcDayString(nowS) + "T00:00:00Z");
   let sum = 0;
   for (const r of rows) {
     const dayMs = Date.parse(r.day + "T00:00:00Z");
     const ageDays = Math.round((todayMs - dayMs) / 86_400_000);
     if (ageDays < 0 || ageDays > ECON.IDLE_LOOKBACK_DAYS) continue;
-    sum += r.msgs * Math.pow(0.5, ageDays / ECON.IDLE_HALF_LIFE_DAYS);
+    sum += r.xp * Math.pow(0.5, ageDays / ECON.IDLE_HALF_LIFE_DAYS);
   }
-  return ECON.RATE_PER_MSG * sum;
+  return {
+    rate: Math.pow(sum, ECON.IDLE_EXPONENT) / ECON.IDLE_DIVISOR,
+    weightedXp: Math.round(sum),
+  };
 }
 
 /**
- * Lazy accrual (design §4): gold earned since idle_accrued_at, capped at 24h.
+ * Lazy accrual: gold earned since idle_accrued_at, capped at 24h.
  * Pure — returns the integer gold delta and the timestamp to store.
  */
 export function accrueIdle(args: {
-  rate: number; // gold/hour from idleRate()
+  rate: number; // gold/hour from idleRate().rate
   prestige: number;
   idleAccruedAt: number;
   nowS: number;

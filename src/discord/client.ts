@@ -9,7 +9,7 @@ export function createClient(): Client {
     intents: [
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
-      GatewayIntentBits.MessageContent, // privileged — for char_count / length bonus
+      GatewayIntentBits.MessageContent, // privileged — needed to read message text for XP
       GatewayIntentBits.GuildMessageReactions,
       GatewayIntentBits.GuildMembers, // privileged — for L5/10/25/50 role rewards
     ],

@@ -13,7 +13,7 @@ import {
 } from "../../game/users.ts";
 import { channelWeight } from "../../game/guilds.ts";
 import { recordServerQuestProgress } from "../../game/quests.ts";
-import { replyCounts } from "../state.ts";
+import { replyCounts, admitMessage } from "../state.ts";
 import { applyLevelRewards, applyRaidForGrant } from "../rewards.ts";
 
 export async function onMessageCreate(message: Message): Promise<void> {
@@ -24,21 +24,24 @@ export async function onMessageCreate(message: Message): Promise<void> {
   const userId = message.author.id;
   const content = message.content ?? "";
   const nonWs = content.replace(/\s/g, "").length;
-  if (nonWs < ECON.MIN_CHARS) return; // too short to count at all (§3.1)
+  if (nonWs < ECON.MIN_CHARS) return; // too short to count at all (spam filter)
 
-  const chars = content.length;
   const channel = message.channel as GuildTextBasedChannel;
   const now = nowS();
+  const nowMs = now * 1000;
 
-  // --- sender's own message XP (60s cooldown) ---
+  // --- sender's own message XP (token bucket) ---
+  const admitted = admitMessage(guildId, userId, nowMs);
+
   const senderGrant = tx(() => {
     const user = getOrCreateUser(guildId, userId);
-    bumpMessageStats(guildId, userId, chars); // always (even in cooldown)
-    if (now - user.last_xp_at < ECON.XP_COOLDOWN_S) return null;
+    bumpMessageStats(guildId, userId); // always, even when bucket rejects
+
+    if (!admitted) return null;
+
     const eff = effectiveStats(user);
     const xp = Math.floor(
       messageXp({
-        chars,
         channelWeight: channelWeight(guildId, message.channelId),
         intStat: eff.int,
         prestige: user.prestige,
@@ -76,9 +79,8 @@ async function creditReply(
   } catch {
     return; // referenced message gone / inaccessible
   }
-  if (!recipientId || recipientId === replierId) return; // no self-replies (§3.2)
+  if (!recipientId || recipientId === replierId) return; // no self-replies
 
-  // cap: REPLY_CAP_PER_MSG credited replies per replied-to message
   const credited = replyCounts.get(refId) ?? 0;
   if (credited >= ECON.REPLY_CAP_PER_MSG) return;
   replyCounts.set(refId, credited + 1);
@@ -86,7 +88,7 @@ async function creditReply(
   const grant = tx(() => {
     const recipient = getOrCreateUser(guildId, recipientId!);
     const xp = Math.floor(replyXp(effectiveStats(recipient).cha));
-    bumpRepliesRecv(guildId, recipientId!);
+    bumpRepliesRecv(guildId, recipientId!, now);
     return grantXp(guildId, recipientId!, xp, { nowS: now });
   });
 

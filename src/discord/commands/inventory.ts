@@ -11,14 +11,27 @@ import type { Command } from "./types.ts";
 import { tx, getDb } from "../../db/db.ts";
 import { listInventory, salvage, type InventoryItem } from "../../game/inventory.ts";
 import { salvageValue } from "../../game/gacha.ts";
-import { RARITY_EMOJI } from "../embeds.ts";
+import { RARITY_EMOJI, statSpread } from "../embeds.ts";
+
+const RARITY_SORT_ORDER: Record<string, number> = {
+  legendary: 4,
+  epic: 3,
+  rare: 2,
+  uncommon: 1,
+  common: 0,
+};
+
+function raritySort(items: InventoryItem[], direction: "asc" | "desc" = "desc"): InventoryItem[] {
+  return items.sort((a, b) => {
+    const aRarity = a.equipped ? 99 : 0 + (RARITY_SORT_ORDER[a.rarity] ?? 0);
+    const bRarity = b.equipped ? 99 : 0 + (RARITY_SORT_ORDER[b.rarity] ?? 0);
+    return direction === "asc" ? aRarity - bRarity : bRarity - aRarity;
+  });
+}
 
 function itemLabel(it: InventoryItem): string {
-  const stats = (["str", "int", "cha", "luk"] as const)
-    .filter((k) => it[k] > 0)
-    .map((k) => `${k.toUpperCase()}+${it[k]}`)
-    .join(" ");
-  return `${it.name} · ${it.rarity}/${it.slot}${stats ? ` · ${stats}` : ""}`;
+  const stats = statSpread(it, it.primary);
+  return `${it.name} · ${it.slot}${stats ? ` · ${stats}` : ""}`;
 }
 
 // Returns a message payload (no ephemeral flag) usable by both reply() and update().
@@ -28,25 +41,27 @@ export function buildInventoryReply(guildId: string, userId: string): BaseMessag
     return { content: "🎒 Your inventory is empty — try `/pull`.", embeds: [], components: [] };
   }
 
-  const lines = items
-    .slice(0, 40)
+  const lines = raritySort(items.slice(0, 40))
     .map((it) => `${it.equipped ? "✅" : "▫️"} ${RARITY_EMOJI[it.rarity]} ${itemLabel(it)}`);
   const embed = new EmbedBuilder()
     .setTitle("🎒 Inventory")
     .setColor(0x5865f2)
     .setDescription(lines.join("\n"));
 
-  const equipOptions = items
-    .filter((it) => !it.equipped)
+  const equipOptions = raritySort(
+    items.filter((it) => !it.equipped)
     .slice(0, 25)
+  )
     .map((it) => ({
       label: itemLabel(it).slice(0, 100),
       value: String(it.instance_id),
       emoji: RARITY_EMOJI[it.rarity],
     }));
-  const salvageOptions = items
-    .filter((it) => !it.equipped)
-    .slice(0, 25)
+  const salvageOptions = raritySort(
+    items.filter((it) => !it.equipped)
+    .slice(0, 25),
+    "asc"
+  )
     .map((it) => ({
       label: `${it.name} (+${salvageValue(it.rarity)}g)`.slice(0, 100),
       value: String(it.instance_id),

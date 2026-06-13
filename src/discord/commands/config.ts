@@ -133,8 +133,9 @@ export const config: Command = {
 
     if (sub === "post-leaderboard") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const day = previousUtcDay(nowS());
-      const posted = await postLeaderboardForGuild(interaction.client, guildId, day);
+      const now = nowS();
+      const day = previousUtcDay(now);
+      const posted = await postLeaderboardForGuild(interaction.client, guildId, day, now);
       await interaction.editReply(
         posted
           ? `✅ Posted the ${day} leaderboard.`
