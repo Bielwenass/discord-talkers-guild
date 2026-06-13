@@ -30,9 +30,9 @@ export const expedition: Command = {
             .setDescription("Which expedition")
             .setRequired(true)
             .addChoices(
-              { name: "Scout — 4h, 3× rate, 1 roll", value: "scout" },
-              { name: "Delve — 8h, 6× rate, 1 roll +5 LUK", value: "delve" },
-              { name: "Vigil — 24h, 16× rate, 2 rolls +10 LUK", value: "vigil" },
+              { name: "Scout — 4h, 2× hourly gold, 1 roll", value: "scout" },
+              { name: "Delve — 8h, 4× hourly gold, 1 roll at +5 LUK", value: "delve" },
+              { name: "Vigil — 24h, 8× hourly gold, 2 rolls at +10 LUK", value: "vigil" },
             ),
         ),
     )

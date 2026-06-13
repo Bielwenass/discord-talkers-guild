@@ -103,9 +103,9 @@ Idle timers that snapshot the idle rate at start and pay out on lazy resolve:
 
 | Tier | Duration | Gold multiplier | Item rolls | LUK bonus |
 |---|---|---|---|---|
-| Scout | 4h | 3x | 1 | 0 |
-| Delve | 8h | 6x | 1 | +5 |
-| Vigil | 24h | 16x | 2 | +10 |
+| Scout | 4h | 2x | 1 | 0 |
+| Delve | 8h | 4x | 1 | +5 |
+| Vigil | 24h | 8x | 2 | +10 |
 
 Gold payout has +/-15% variance.
 
@@ -178,7 +178,7 @@ Quests are *dealt* (a deterministic daily board) and *test a stat*, where expedi
 scales efficiency:
 
 ```
-eff = 1 + 0.025 * governing_stat        # capped at 3.0 (cap at stat 80)
+eff = 1 + 0.05 * governing_stat        # capped at 3.0 (cap at stat 80)
 ```
 
 Each user sees **3 offers per UTC day** (spanning ≥2 governing stats) and holds **one

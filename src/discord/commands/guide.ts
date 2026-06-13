@@ -27,7 +27,7 @@ const guideEmbed = new EmbedBuilder()
       name: "Every stat also scales quests",
       value:
         "Quests are *dealt* to you daily and test a stat — but never gate. The governing stat only " +
-        "scales efficiency: `eff = 1 + 0.025 × stat` (up to ×3). Bountiful quests pay more; Swift " +
+        "scales efficiency: `eff = 1 + 0.05 × stat` (up to ×3). Bountiful quests pay more; Swift " +
         "quests finish faster.",
     },
     {
